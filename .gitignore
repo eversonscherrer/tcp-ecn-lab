@@ -1,6 +1,3 @@
-results/*/
-results/plots/
-results/summary.csv
 *.pcap
 *.pyc
 __pycache__/
