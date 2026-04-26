@@ -33,6 +33,9 @@ apply_sysctl() {
 
 echo "mode=$MODE kernel=$(uname -r)"
 
+# Always reset congestion control to cubic first so previous runs don't bleed over
+sudo sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
+
 case "$MODE" in
     none)
         apply_sysctl net.ipv4.tcp_ecn 0
@@ -46,10 +49,15 @@ case "$MODE" in
         apply_sysctl net.ipv4.tcp_ecn 1
         apply_sysctl net.ipv4.tcp_ecn_option 2
         ;;
+    dctcp)
+        apply_sysctl net.ipv4.tcp_ecn 1
+        apply_sysctl net.ipv4.tcp_ecn_option 2
+        apply_sysctl net.ipv4.tcp_congestion_control dctcp
+        ;;
     *)
         echo "Unknown mode: $MODE" >&2
         exit 1
         ;;
 esac
 
-sysctl -a 2>/dev/null | grep -E 'net.ipv4.tcp_ecn' || true
+sysctl -a 2>/dev/null | grep -E 'net.ipv4.tcp_ecn|tcp_congestion_control' || true

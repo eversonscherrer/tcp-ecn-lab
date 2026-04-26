@@ -20,9 +20,9 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
 
-MODES = ["none", "classic", "accecn"]
-COLORS = {"none": "#d62728", "classic": "#ff7f0e", "accecn": "#2ca02c"}
-LABELS = {"none": "No ECN", "classic": "Classic ECN", "accecn": "AccECN"}
+MODES = ["none", "classic", "accecn", "dctcp"]
+COLORS = {"none": "#d62728", "classic": "#ff7f0e", "accecn": "#2ca02c", "dctcp": "#1f77b4"}
+LABELS = {"none": "No ECN", "classic": "Classic ECN", "accecn": "AccECN", "dctcp": "DCTCP+AccECN"}
 MIN_DURATION = 50  # ignore the short warm-up runs
 
 
@@ -72,17 +72,21 @@ def load_server_ss_cwnd(results_dir: Path, timestamp: str, mode: str) -> list[tu
 
 
 def group_into_sessions(rows: list[dict]) -> list[dict[str, dict]]:
-    """Group consecutive (none, classic, accecn) triples into sessions."""
+    """Group consecutive runs into sessions starting at each 'none' entry.
+
+    Accepts sessions with 3 modes (none/classic/accecn) or 4 (+ dctcp).
+    """
+    VALID = ({"none", "classic", "accecn"}, {"none", "classic", "accecn", "dctcp"})
     sessions: list[dict[str, dict]] = []
     current: dict[str, dict] = {}
     for row in rows:
         mode = row["mode"]
         if mode == "none" and current:
-            if set(current) == {"none", "classic", "accecn"}:
+            if set(current) in VALID:
                 sessions.append(current)
             current = {}
         current[mode] = row
-    if set(current) == {"none", "classic", "accecn"}:
+    if set(current) in VALID:
         sessions.append(current)
     return sessions
 
@@ -97,27 +101,28 @@ def plot_comparison(results_dir: Path, output: Path) -> None:
     for r in rows:
         by_mode[r["mode"]].append(r)
 
+    # Only plot modes present in data, preserving canonical order
+    active_modes = [m for m in MODES if m in by_mode]
+
     sessions = group_into_sessions(rows)
     latest = sessions[-1] if sessions else None
 
+    title = "TCP Congestion Control Comparison — " + "  vs  ".join(LABELS[m] for m in active_modes)
     fig = plt.figure(figsize=(14, 10))
-    fig.suptitle(
-        "TCP Congestion Control Comparison — No ECN  vs  Classic ECN  vs  AccECN",
-        fontsize=13, fontweight="bold", y=0.98,
-    )
+    fig.suptitle(title, fontsize=13, fontweight="bold", y=0.98)
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.42, wspace=0.32)
     ax_tput = fig.add_subplot(gs[0, 0])
     ax_ts   = fig.add_subplot(gs[0, 1])
     ax_ecn  = fig.add_subplot(gs[1, 0])
     ax_cwnd = fig.add_subplot(gs[1, 1])
 
-    x = np.arange(len(MODES))
-    bar_colors = [COLORS[m] for m in MODES]
-    xlabels = [LABELS[m] for m in MODES]
+    x = np.arange(len(active_modes))
+    bar_colors = [COLORS[m] for m in active_modes]
+    xlabels = [LABELS[m] for m in active_modes]
 
     # ── 1. Mean throughput (receive) per mode ─────────────────────────────
     means, stds = [], []
-    for m in MODES:
+    for m in active_modes:
         vals = [float(r["throughput_recv_mbps"]) for r in by_mode.get(m, []) if r.get("throughput_recv_mbps")]
         means.append(np.mean(vals) if vals else 0.0)
         stds.append(np.std(vals) if len(vals) > 1 else 0.0)
@@ -138,7 +143,7 @@ def plot_comparison(results_dir: Path, output: Path) -> None:
 
     # ── 2. Throughput over time — latest complete session ─────────────────
     if latest:
-        for m in MODES:
+        for m in active_modes:
             row = latest.get(m)
             if not row:
                 continue
@@ -170,8 +175,8 @@ def plot_comparison(results_dir: Path, output: Path) -> None:
     has_qdisc_data = any(mark_vals.values()) or any(drop_vals.values())
     if has_qdisc_data:
         w = 0.35
-        mark_means = [np.mean(mark_vals[m]) if mark_vals[m] else 0 for m in MODES]
-        drop_means = [np.mean(drop_vals[m]) if drop_vals[m] else 0 for m in MODES]
+        mark_means = [np.mean(mark_vals[m]) if mark_vals[m] else 0 for m in active_modes]
+        drop_means = [np.mean(drop_vals[m]) if drop_vals[m] else 0 for m in active_modes]
         bars1 = ax_ecn.bar(x - w / 2, mark_means, w, label="ECN marks (fq_codel)",
                            color="#1f77b4", alpha=0.85, zorder=3)
         bars2 = ax_ecn.bar(x + w / 2, drop_means, w, label="Packet drops (fq_codel)",
@@ -196,7 +201,7 @@ def plot_comparison(results_dir: Path, output: Path) -> None:
     # ── 4. Sender cwnd over time (server-ss.log) OR RTT bars ─────────────
     cwnd_plotted = False
     if latest:
-        for m in MODES:
+        for m in active_modes:
             row = latest.get(m)
             if not row:
                 continue
@@ -222,8 +227,8 @@ def plot_comparison(results_dir: Path, output: Path) -> None:
                 rtt_vals[m].append(float(r["rtt_mean_ms"]))
 
         if any(rtt_vals.values()):
-            rtt_means = [np.mean(rtt_vals[m]) if rtt_vals[m] else 0 for m in MODES]
-            rtt_stds  = [np.std(rtt_vals[m]) if len(rtt_vals[m]) > 1 else 0 for m in MODES]
+            rtt_means = [np.mean(rtt_vals[m]) if rtt_vals[m] else 0 for m in active_modes]
+            rtt_stds  = [np.std(rtt_vals[m]) if len(rtt_vals[m]) > 1 else 0 for m in active_modes]
             bars = ax_cwnd.bar(x, rtt_means, yerr=rtt_stds, capsize=6,
                                color=bar_colors, alpha=0.85, zorder=3)
             ax_cwnd.set_xticks(x); ax_cwnd.set_xticklabels(xlabels)

@@ -86,7 +86,7 @@ def main() -> int:
     for run_dir in sorted(root.iterdir()):
         if not run_dir.is_dir():
             continue
-        match = re.match(r"(\d{8}-\d{6})-(none|classic|accecn)$", run_dir.name)
+        match = re.match(r"(\d{8}-\d{6})-(none|classic|accecn|dctcp)$", run_dir.name)
         if not match:
             continue
         parsed = parse_iperf(run_dir / "iperf-client.json")
@@ -97,6 +97,14 @@ def main() -> int:
         intervals = parse_iperf_intervals(run_dir / "iperf-client.json")
         qdisc = parse_qdisc_final(run_dir / "qdisc-final.log")
 
+        params: dict[str, str] = {}
+        params_path = run_dir / "params.txt"
+        if params_path.exists():
+            for line in params_path.read_text().splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    params[k.strip()] = v.strip()
+
         # Prefer server-side ss (sender cwnd is meaningful); fall back to client
         ss = parse_ss_stats(run_dir / "server-ss.log")
         if ss["rtt_mean_ms"] is None:
@@ -105,6 +113,8 @@ def main() -> int:
         rows.append({
             "timestamp": timestamp,
             "mode": mode,
+            "ecn_target": params.get("ecn_target", ""),
+            "streams": params.get("streams", ""),
             "throughput_sent_mbps": round(parsed["throughput_sent_mbps"], 2),
             "throughput_recv_mbps": round(parsed["throughput_recv_mbps"], 2),
             "throughput_min_mbps": round(min(intervals), 2) if intervals else "",

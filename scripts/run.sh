@@ -10,9 +10,13 @@ RATE="${RATE:-100mbit}"
 DELAY="${DELAY:-25ms}"
 JITTER="${JITTER:-2ms}"
 LOSS="${LOSS:-0%}"
+ECN_TARGET="${ECN_TARGET:-5ms}"
 # Number of parallel iperf3 streams. Use STREAMS=4 to stress the link and
 # make AccECN's proportional congestion feedback more visible.
 STREAMS="${STREAMS:-1}"
+# Space-separated list of modes to run. Override to run a subset or add dctcp.
+# Example: MODES="none classic accecn dctcp" ./scripts/run.sh 60
+RUN_MODES="${MODES:-none classic accecn}"
 LOCAL_RESULTS="$ROOT_DIR/results"
 
 mkdir -p "$LOCAL_RESULTS"
@@ -71,7 +75,11 @@ run_mode() {
     server_ssh "cd '$REMOTE_DIR' && ./scripts/configure-ecn.sh '$mode'" | tee "$dir/server-ecn.log"
     client_ssh "cd '$REMOTE_DIR' && ./scripts/configure-ecn.sh '$mode'" | tee "$dir/client-ecn.log"
 
-    server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ./scripts/setup-qdisc.sh apply" \
+    # Save run parameters for later analysis/filtering
+    printf 'rate=%s\ndelay=%s\njitter=%s\nloss=%s\necn_target=%s\nstreams=%s\n' \
+        "$RATE" "$DELAY" "$JITTER" "$LOSS" "$ECN_TARGET" "$STREAMS" > "$dir/params.txt"
+
+    server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ECN_TARGET='$ECN_TARGET' ./scripts/setup-qdisc.sh apply" \
         | tee "$dir/qdisc.log"
 
     client_ssh "sudo rm -f /tmp/accecn-handshake.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log /tmp/accecn-ss.out"
@@ -118,7 +126,7 @@ PY
 
 trap 'cleanup_remote "${iface:-}"' EXIT
 
-for mode in none classic accecn; do
+for mode in $RUN_MODES; do
     run_mode "$mode"
     sleep 3
 done
