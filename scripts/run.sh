@@ -10,6 +10,9 @@ RATE="${RATE:-100mbit}"
 DELAY="${DELAY:-25ms}"
 JITTER="${JITTER:-2ms}"
 LOSS="${LOSS:-0%}"
+# Number of parallel iperf3 streams. Use STREAMS=4 to stress the link and
+# make AccECN's proportional congestion feedback more visible.
+STREAMS="${STREAMS:-1}"
 LOCAL_RESULTS="$ROOT_DIR/results"
 
 mkdir -p "$LOCAL_RESULTS"
@@ -72,24 +75,31 @@ run_mode() {
         | tee "$dir/qdisc.log"
 
     client_ssh "sudo rm -f /tmp/accecn-handshake.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log /tmp/accecn-ss.out"
-    server_ssh "sudo rm -f /tmp/accecn-server.json /tmp/accecn-server.out"
+    server_ssh "sudo rm -f /tmp/accecn-server.json /tmp/accecn-server.out /tmp/accecn-server-ss.log"
 
-    client_ssh "nohup sudo tcpdump -i any -nn -vv -w /tmp/accecn-handshake.pcap 'tcp port 5201' >/tmp/accecn-tcpdump.log 2>&1 &"
+    client_ssh "nohup sudo tcpdump -i any -nn -vv -c 20 -w /tmp/accecn-handshake.pcap 'tcp port 5201 and (tcp[tcpflags] & tcp-syn != 0)' >/tmp/accecn-tcpdump.log 2>&1 &"
     server_ssh "nohup iperf3 -s -1 --json --logfile /tmp/accecn-server.json >/tmp/accecn-server.out 2>&1 &"
 
     sleep 2
 
+    # Client-side ss: measures RTT and receiver window growth
     client_ssh "nohup bash -lc 'for i in \$(seq 1 $((DURATION * 2))); do now=\$(date +%s.%N); ss -tin dst $SERVER_IP 2>/dev/null | awk -v ts=\$now '\\''NR>1 {print ts\" \"\$0}'\\'' >> /tmp/accecn-ss.log; sleep 0.5; done' >/tmp/accecn-ss.out 2>&1 &"
 
-    echo "Running iperf3..."
-    client_ssh "iperf3 -c '$SERVER_IP' -R -t '$DURATION' -J" > "$dir/iperf-client.json"
+    # Server-side ss: measures cwnd of the actual data sender (iperf3 -R sends from server)
+    server_ssh "nohup bash -lc 'for i in \$(seq 1 $((DURATION * 2))); do now=\$(date +%s.%N); ss -tin dst $CLIENT_IP 2>/dev/null | awk -v ts=\$now '\\''NR>1 {print ts\" \"\$0}'\\'' >> /tmp/accecn-server-ss.log; sleep 0.5; done' >/dev/null 2>&1 &"
+
+    echo "Running iperf3 (streams=$STREAMS duration=${DURATION}s)..."
+    client_ssh "iperf3 -c '$SERVER_IP' -R -t '$DURATION' -P '$STREAMS' -J" > "$dir/iperf-client.json"
 
     sleep 1
+    server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' ./scripts/setup-qdisc.sh show" \
+        > "$dir/qdisc-final.log" || true
     cleanup_remote "$iface"
 
     scp -P "$CLIENT_PORT" $SSH_OPTS "$CLIENT_USER@$CLIENT_HOST:/tmp/accecn-handshake.pcap" "$dir/handshake.pcap" >/dev/null 2>&1 || true
     scp -P "$CLIENT_PORT" $SSH_OPTS "$CLIENT_USER@$CLIENT_HOST:/tmp/accecn-ss.log" "$dir/ss-samples.log" >/dev/null 2>&1 || true
     scp -P "$SERVER_PORT" $SSH_OPTS "$SERVER_USER@$SERVER_HOST:/tmp/accecn-server.json" "$dir/iperf-server.json" >/dev/null 2>&1 || true
+    scp -P "$SERVER_PORT" $SSH_OPTS "$SERVER_USER@$SERVER_HOST:/tmp/accecn-server-ss.log" "$dir/server-ss.log" >/dev/null 2>&1 || true
 
     python3 - "$dir/iperf-client.json" <<'PY'
 import json
