@@ -1,7 +1,0 @@
-*.pcap
-*.pyc
-__pycache__/
-.venv/
-.env
-results/*
-!results/.gitkeep
