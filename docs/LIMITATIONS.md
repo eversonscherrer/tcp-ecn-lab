@@ -1,41 +1,35 @@
-# Limitações conhecidas
+# Limitações
 
-Este projeto agora usa VirtualBox para evitar as limitações do Docker Desktop/LinuxKit no macOS. Ainda assim, algumas limitações continuam importantes.
+## Kernel da VM
 
-## 1. O kernel da VM manda em tudo
+Proxmox virtualiza hardware; ele não adiciona suporte de kernel. AccECN depende do kernel instalado dentro da VM.
 
-AccECN depende do kernel Linux da VM. A imagem Ubuntu usada no disco não basta: é necessário que o kernel em execução exponha `net.ipv4.tcp_ecn_option`.
-
-Verifique dentro da VM:
+Verifique:
 
 ```bash
 uname -r
 sysctl net.ipv4.tcp_ecn_option
 ```
 
-Se esse sysctl não existir, o modo `accecn` falha cedo.
+Se `tcp_ecn_option` não existir, o modo `accecn` não é suportado.
 
-## 2. VirtualBox não fornece o kernel
+## Uma VM, dois namespaces
 
-VirtualBox virtualiza hardware. Ele não adiciona suporte a AccECN nem qdiscs. Você ainda precisa instalar ou compilar um kernel adequado dentro da VM.
+Client e server rodam na mesma VM, isolados por `ip netns`. Isso é ótimo para reprodutibilidade, mas não mede efeitos de múltiplas máquinas físicas, switches reais ou roteamento externo.
 
-## 3. O experimento usa namespaces, não duas máquinas
+## fq_codel não é L4S completo
 
-Client e server ficam na mesma VM, isolados por `ip netns` e conectados por `veth`. Isso é ótimo para reprodutibilidade e controle, mas não reproduz todos os efeitos de placas, switches e roteadores reais.
+`fq_codel ecn` marca pacotes CE e permite comparar ECN, mas não implementa uma topologia L4S completa. Para L4S real, seria necessário DualPI2 ou equivalente, além de congestion control escalável.
 
-## 4. fq_codel não é DualPI2
+## Resultados variam
 
-`fq_codel ecn` marca pacotes e permite comparar ECN/AccECN, mas não é uma topologia L4S completa. L4S de ponta a ponta exigiria AccECN, congestion control escalável e um roteador com DualPI2 ou equivalente.
-
-## 5. Resultados de uma run são ruidosos
-
-Para análise séria:
+Uma execução curta serve para validar o pipeline, não para conclusão estatística. Para análise séria:
 
 - rode cada modo várias vezes;
-- varie `RATE`, `DELAY`, `LOSS`;
-- calcule média e intervalo de confiança;
-- capture também handshake e `ss -tin` para confirmar o estado TCP.
+- varie `RATE`, `DELAY` e `LOSS`;
+- calcule médias e intervalos de confiança;
+- salve os pcaps para confirmar handshake ECN/AccECN.
 
-## 6. macOS só orquestra
+## Acesso remoto
 
-Os scripts `vm-*` rodam no macOS, mas o experimento deve ser executado dentro da VM com `sudo`. Rodar `run-all.sh` diretamente no macOS não funciona, porque depende de `ip netns`, `tc`, `iperf3` e sysctls Linux.
+Os scripts `remote-*` assumem SSH funcional e usuário com `sudo`. Se o usuário exige senha para `sudo`, o terminal remoto pode pedir a senha durante `remote-provision.sh` ou `remote-run.sh`.
