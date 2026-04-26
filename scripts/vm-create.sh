@@ -17,22 +17,53 @@ VM_MEMORY_MB="${VM_MEMORY_MB:-4096}"
 VM_DISK_MB="${VM_DISK_MB:-30000}"
 SSH_PORT="${SSH_PORT:-2222}"
 VM_DIR="${VM_DIR:-$HOME/VirtualBox VMs/$VM_NAME}"
-
-"$(dirname "$0")/vm-check.sh"
+OS_TYPE="${OS_TYPE:-}"
 
 if [[ -z "$ISO_PATH" || ! -f "$ISO_PATH" ]]; then
-    echo "Set ISO_PATH to an Ubuntu Server ISO path." >&2
+    echo "Set ISO_PATH to a real Ubuntu Server ISO path." >&2
+    echo "Example: ISO_PATH=$HOME/Downloads/ubuntu-24.04.2-live-server-amd64.iso $0" >&2
     exit 1
 fi
+
+"$(dirname "$0")/vm-check.sh"
 
 if VBoxManage showvminfo "$VM_NAME" >/dev/null 2>&1; then
     echo "VM already exists: $VM_NAME"
     exit 0
 fi
 
+if [[ -z "$OS_TYPE" ]]; then
+    OS_TYPE="$(python3 - <<'PY' || true
+import subprocess
+import sys
+
+try:
+    out = subprocess.check_output(["VBoxManage", "list", "ostypes"], text=True, timeout=10)
+except Exception:
+    sys.exit(1)
+
+ids = [line.split(":", 1)[1].strip() for line in out.splitlines() if line.startswith("ID:")]
+for prefix in ("Ubuntu", "Debian", "Linux"):
+    for value in ids:
+        if value.startswith(prefix) and "64" in value:
+            print(value)
+            sys.exit(0)
+sys.exit(1)
+PY
+)"
+fi
+
+if [[ -z "$OS_TYPE" ]]; then
+    echo "Could not auto-detect a VirtualBox 64-bit Linux OS type." >&2
+    echo "Retry with OS_TYPE=<id>, for example OS_TYPE=Ubuntu24_LTS_64." >&2
+    exit 1
+fi
+
 mkdir -p "$VM_DIR"
 
-VBoxManage createvm --name "$VM_NAME" --ostype Ubuntu_64 --register
+echo "Using VirtualBox OS type: $OS_TYPE"
+
+VBoxManage createvm --name "$VM_NAME" --ostype "$OS_TYPE" --register
 VBoxManage modifyvm "$VM_NAME" \
     --cpus "$VM_CPUS" \
     --memory "$VM_MEMORY_MB" \

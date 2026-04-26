@@ -18,6 +18,8 @@ ISO_PATH=/path/to/ubuntu-server.iso ./scripts/vm-create.sh
 ./scripts/vm-ssh.sh
 ```
 
+Rode esses comandos um por vez. O `vm-create.sh` precisa de um caminho real para a ISO e a instalação da VM precisa terminar antes de `vm-provision.sh`.
+
 Dentro da VM:
 
 ```bash
@@ -88,10 +90,10 @@ accecn-tcp-experiment/
 
 ### 1. Criar a VM
 
-Baixe uma ISO de Ubuntu Server e rode:
+Baixe uma ISO de Ubuntu Server e rode com o caminho real do arquivo:
 
 ```bash
-ISO_PATH="$HOME/Downloads/ubuntu-server.iso" ./scripts/vm-create.sh
+ISO_PATH="$HOME/Downloads/ubuntu-24.04.2-live-server-amd64.iso" ./scripts/vm-create.sh
 ```
 
 Variáveis úteis:

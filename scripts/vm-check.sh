@@ -30,9 +30,15 @@ if ! vbox_with_timeout list systemproperties >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! vbox_with_timeout list ostypes | grep -q '^ID:.*Ubuntu_64'; then
-    echo "Ubuntu_64 OS type was not found in this VirtualBox installation." >&2
-    exit 1
+os_type="$(vbox_with_timeout list ostypes \
+    | awk '/^ID:/ {print $2}' \
+    | grep -E 'Ubuntu.*64|Debian.*64|Linux.*64' \
+    | head -n 1 || true)"
+if [[ -z "$os_type" ]]; then
+    echo "Could not find a 64-bit Linux OS type in this VirtualBox installation." >&2
+    echo "You can still try vm-create.sh with OS_TYPE=<id> if VBoxManage createvm accepts it." >&2
+else
+    echo "Detected Linux OS type: $os_type"
 fi
 
 command -v ssh >/dev/null || {
