@@ -52,6 +52,7 @@ case "$MODE" in
     dctcp)
         apply_sysctl net.ipv4.tcp_ecn 1
         apply_sysctl net.ipv4.tcp_ecn_option 2
+        sudo modprobe tcp_dctcp 2>/dev/null || true
         apply_sysctl net.ipv4.tcp_congestion_control dctcp
         ;;
     *)

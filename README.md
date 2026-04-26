@@ -1,9 +1,10 @@
 # AccECN TCP Experiment
 
-Experiment comparing TCP throughput and congestion behavior across three ECN modes:
-**No ECN**, **Classic ECN** (RFC 3168), and **AccECN** (RFC 9331) — using two Ubuntu
-Server 26.04 VMs on Proxmox. The orchestration scripts run on one of the VMs (or any
-Linux host with SSH access to both) and control the experiment remotely via SSH.
+Experiment comparing TCP throughput and congestion behavior across four modes:
+**No ECN**, **Classic ECN** (RFC 3168), **AccECN** (RFC 9331), and **DCTCP+AccECN** —
+using two Ubuntu Server 26.04 VMs on Proxmox. The orchestration scripts run on one of
+the VMs (or any Linux host with SSH access to both) and control the experiment remotely
+via SSH.
 
 ## Topology
 
@@ -27,13 +28,14 @@ graph LR
 
 ## How It Works
 
-For each mode (`none` → `classic` → `accecn`) the orchestrator:
+For each mode (`none` → `classic` → `accecn` → `dctcp`) the orchestrator:
 
-1. Configures `net.ipv4.tcp_ecn` and `net.ipv4.tcp_ecn_option` on both VMs.
+1. Configures `net.ipv4.tcp_ecn`, `net.ipv4.tcp_ecn_option`, and optionally
+   `net.ipv4.tcp_congestion_control` on both VMs.
 2. Applies a `tc` qdisc stack on the server's egress interface:
    - **HTB** — rate limiter (default `RATE=100mbit`)
    - **netem** — adds controlled delay and jitter (default `DELAY=25ms JITTER=2ms`)
-   - **fq_codel ecn** — AQM with ECN marking (target 5 ms, limit 1000 packets)
+   - **fq_codel ecn** — AQM with ECN marking (configurable `ECN_TARGET`, default `5ms`)
 3. Starts `iperf3 -s` on the server and `iperf3 -c -R` on the client.
 4. Samples `ss -tin` every 500 ms on **both** sides (client: RTT / receiver window; server: sender cwnd).
 5. Captures the TCP handshake with `tcpdump` to verify ECN option negotiation.
@@ -42,21 +44,75 @@ For each mode (`none` → `classic` → `accecn`) the orchestrator:
 
 ### ECN mode sysctl table
 
-| Mode | `tcp_ecn` | `tcp_ecn_option` | Effect |
-|------|-----------|-------------------|--------|
-| `none` | 0 | — | No ECN; fq_codel drops instead of marking → throughput collapses |
-| `classic` | 1 | 0 | RFC 3168 ECN; fq_codel marks; binary cwnd halving on CE |
-| `accecn` | 1 | 2 | RFC 9331 AccECN; ACKs carry exact CE count; proportional response possible |
+| Mode | `tcp_ecn` | `tcp_ecn_option` | `tcp_congestion_control` | Effect |
+|------|-----------|-------------------|--------------------------|--------|
+| `none` | 0 | — | cubic | No ECN; fq_codel drops instead of marking → throughput collapses |
+| `classic` | 1 | 0 | cubic | RFC 3168 ECN; fq_codel marks; binary cwnd halving on each CE |
+| `accecn` | 1 | 2 | cubic | RFC 9331 AccECN; ACKs carry exact CE count; Cubic still halves |
+| `dctcp` | 1 | 2 | dctcp | DCTCP uses the AccECN CE count for proportional cwnd reduction |
 
-### Key finding
+## Experimental Results
 
-With `fq_codel ecn` enabled on the qdisc, a connection that **does not support ECN**
-receives **packet drops** instead of marks. TCP (Cubic) reacts to every drop with a
-halving of the congestion window, leading to throughput collapse (~0.2 Mbps vs ~92 Mbps).
+All experiments ran on kernel **7.0.0-14-generic**, link rate **100 Mbit/s**,
+one-way delay **25 ms ± 2 ms** (RTT ≈ 50 ms).
 
-Classic ECN and AccECN both avoid drops entirely. The difference between them becomes
-visible with multiple competing streams or when using DCTCP (which exploits the
-per-ACK CE count provided by AccECN for proportional window reduction).
+### Scenario 1 — Baseline (fq_codel target 5 ms, 1 stream)
+
+| Mode | Recv throughput | fq_codel marks | fq_codel drops |
+|------|----------------|----------------|----------------|
+| No ECN | ~0.2 Mbps | 0 | 4 |
+| Classic ECN | ~93 Mbps | 18 | 0 |
+| AccECN | ~93 Mbps | 17 | 0 |
+| DCTCP+AccECN | ~95 Mbps | 17 | 0 |
+
+With the default 5 ms target, ECN marks are rare (~17 per 60 s run). Cubic's binary
+halving is triggered infrequently, so Classic ECN, AccECN, and DCTCP perform similarly.
+The dramatic difference is between **No ECN and everything else**: fq_codel drops packets
+for non-ECN connections, causing Cubic to repeatedly halve and never recover.
+
+### Scenario 2 — Aggressive marking (fq_codel target 1 ms, 1 stream)
+
+| Mode | Recv throughput | fq_codel marks |
+|------|----------------|----------------|
+| No ECN | ~9 Mbps | 0 (drops) |
+| Classic ECN | **82 Mbps** | ~40 |
+| AccECN | **83 Mbps** | ~44 |
+| DCTCP+AccECN | **95 Mbps** | **4 538** |
+
+Reducing the target to 1 ms causes fq_codel to mark far more aggressively. This exposes
+the key architectural difference:
+
+- **Classic ECN / AccECN with Cubic**: each CE mark triggers a binary halving of cwnd
+  (÷2), even if only a tiny fraction of packets were marked. With 40+ marks per run,
+  throughput drops to ~82 Mbps.
+- **DCTCP+AccECN**: DCTCP reads the exact CE-marked byte count from AccECN ACK options
+  and scales the cwnd reduction proportionally to the congestion fraction. Despite
+  receiving **4 538 marks**, throughput stays at **95 Mbps** — the same as with no
+  congestion signal at all.
+
+### Scenario 3 — Multiple competing flows (fq_codel target 1 ms, 4 streams)
+
+| Mode | Recv throughput | Notes |
+|------|----------------|-------|
+| No ECN | ~12 Mbps | Per-flow drops cause repeated collapse across all streams |
+| Classic ECN | ~95 Mbps | fq_codel isolates flows; marks spread evenly |
+| AccECN | ~95 Mbps | Same as Classic with Cubic |
+| DCTCP+AccECN | **96 Mbps** | Highest and most stable aggregate throughput |
+
+With 4 parallel streams fq_codel's per-flow fair queuing distributes marks across flows,
+reducing the synchronization penalty of binary halving. The aggregate gap between
+Classic ECN and DCTCP narrows, but the sender-side **cwnd stability** difference remains
+clearly visible in the `server-ss.log` time series.
+
+### Summary: what differentiates each mode
+
+| Observation | No ECN | Classic ECN | AccECN (Cubic) | DCTCP+AccECN |
+|-------------|--------|-------------|----------------|--------------|
+| Drops under congestion | yes | no | no | no |
+| Throughput collapse | yes | no | no | no |
+| cwnd oscillation (sawtooth) | severe | moderate | moderate | minimal |
+| Marks absorbed proportionally | — | no | no | **yes** |
+| Sensitive to mark frequency | — | **yes** | **yes** | no |
 
 ## Setup
 
@@ -96,17 +152,21 @@ cp .env.example .env
 # Quick smoke test (5 s per mode)
 ./scripts/run.sh 5
 
-# Standard run (60 s per mode — recommended)
-./scripts/run.sh 60
+# Standard run — all 4 modes, 60 s each (recommended)
+MODES="none classic accecn dctcp" ./scripts/run.sh 60
 
-# Multiple parallel streams to stress ECN fairness (4 streams, 60 s)
-STREAMS=4 ./scripts/run.sh 60
+# Aggressive marking: expose DCTCP vs Cubic difference
+MODES="none classic accecn dctcp" ECN_TARGET=1ms ./scripts/run.sh 60
+
+# Multiple parallel streams + aggressive marking
+MODES="none classic accecn dctcp" ECN_TARGET=1ms STREAMS=4 ./scripts/run.sh 60
 
 # Custom network conditions
 RATE=50mbit DELAY=50ms JITTER=5ms ./scripts/run.sh 60
 ```
 
-Results are saved under `results/<timestamp>-<mode>/`.
+Results are saved under `results/<timestamp>-<mode>/`. Each directory also contains a
+`params.txt` with the exact environment variables used for that run.
 
 ## Analysis
 
@@ -118,20 +178,21 @@ python3 analysis/parse-results.py
 python3 analysis/plot-results.py
 ```
 
-Both scripts work from any working directory; paths are resolved relative to the
-script location.
+Both scripts work from any working directory; paths are resolved relative to the script
+location. The chart adapts automatically to whichever modes are present in the data.
 
 ### Output files per run
 
 | File | Contents |
 |------|----------|
-| `iperf-client.json` | Full iperf3 JSON (intervals + summary) |
+| `iperf-client.json` | Full iperf3 JSON (per-second intervals + summary) |
 | `iperf-server.json` | Server-side iperf3 JSON |
-| `ss-samples.log` | Client `ss -tin` samples (RTT, receiver window) |
-| `server-ss.log` | Server `ss -tin` samples (sender cwnd) |
+| `ss-samples.log` | Client `ss -tin` samples every 500 ms (RTT, receiver window) |
+| `server-ss.log` | Server `ss -tin` samples every 500 ms (sender cwnd) |
 | `handshake.pcap` | tcpdump capture of TCP SYN/SYN-ACK (verify ECN options) |
 | `qdisc.log` | `tc qdisc show` at test start |
-| `qdisc-final.log` | `tc -s qdisc show` at test end (ecn_mark, pkt_dropped) |
+| `qdisc-final.log` | `tc -s qdisc show` at test end (`ecn_mark`, `pkt_dropped`) |
+| `params.txt` | Run parameters: `rate`, `delay`, `ecn_target`, `streams` |
 | `server-ecn.log` | sysctl state on server after configuration |
 | `client-ecn.log` | sysctl state on client after configuration |
 
@@ -139,31 +200,31 @@ script location.
 
 | Column | Description |
 |--------|-------------|
-| `throughput_recv_mbps` | Mean receive throughput |
+| `mode` | `none`, `classic`, `accecn`, or `dctcp` |
+| `ecn_target` | fq_codel marking threshold used in this run |
+| `streams` | Number of parallel iperf3 streams |
+| `throughput_recv_mbps` | Mean receive throughput over the full run |
 | `throughput_min_mbps` | Minimum per-second throughput (worst-case interval) |
 | `throughput_stddev_mbps` | Std deviation of per-second throughput |
-| `ecn_mark` | ECN marks issued by fq_codel (0 in `none` mode) |
-| `pkt_dropped` | Packets dropped by fq_codel (>0 in `none` mode) |
+| `ecn_mark` | ECN marks issued by fq_codel |
+| `pkt_dropped` | Packets dropped by fq_codel |
 | `rtt_mean_ms` | Mean RTT from `ss` samples |
 | `cwnd_mean` | Mean sender cwnd from `server-ss.log` |
-
-## Making AccECN vs Classic ECN Difference Visible
-
-With a single Cubic flow both modes behave identically (Cubic does not use the
-per-mark count). To expose the AccECN advantage:
-
-| Approach | How |
-|----------|-----|
-| Multiple streams | `STREAMS=4 ./scripts/run.sh 60` |
-| DCTCP congestion control | On both VMs: `sysctl -w net.ipv4.tcp_congestion_control=dctcp` before running |
-| More aggressive AQM marking | Reduce `fq_codel target` to `1ms` in `scripts/setup-qdisc.sh` |
+| `cwnd_min` | Minimum sender cwnd (captures worst congestion response) |
 
 ## AccECN Kernel Requirement
 
 AccECN requires `net.ipv4.tcp_ecn_option` to exist in `/proc/sys`. This sysctl was
-added in Linux 6.x. If it is absent the `accecn` mode exits with an error — this is
-expected on older kernels.
+added in Linux 6.x. If it is absent the `accecn` and `dctcp` modes exit with an error —
+this is expected on older kernels.
 
 ```bash
 sysctl net.ipv4.tcp_ecn_option   # must return 0, 1, or 2
+```
+
+DCTCP is available as a loadable kernel module and is loaded automatically by
+`configure-ecn.sh` when the `dctcp` mode is selected:
+
+```bash
+sudo modprobe tcp_dctcp
 ```
