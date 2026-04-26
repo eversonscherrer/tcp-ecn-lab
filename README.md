@@ -23,6 +23,13 @@ Edite `.env` com os IPs e usuários reais das VMs.
 ./scripts/check.sh
 ```
 
+Os scripts remotos precisam de `sudo` sem senha para automatizar `tc`, `tcpdump` e instalação de pacotes. Em cada VM, rode uma vez:
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/accecn
+sudo chmod 440 /etc/sudoers.d/accecn
+```
+
 ## 3. Instalar Dependências
 
 ```bash

@@ -5,9 +5,10 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 
-def parse_iperf(path: Path) -> dict | None:
+def parse_iperf(path: Path) -> Optional[dict]:
     if not path.exists():
         return None
     with path.open() as f:

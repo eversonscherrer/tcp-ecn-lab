@@ -12,7 +12,7 @@ check_one() {
 
     echo
     echo "=== $label ==="
-    "$@" bash -lc "
+    "$@" bash -c "
         set -e
         echo \"host: \$(hostname)\"
         echo \"kernel: \$(uname -r)\"
@@ -21,6 +21,7 @@ check_one() {
         for cmd in sudo ip tc iperf3 tcpdump ss python3; do
             command -v \"\$cmd\" >/dev/null && echo \"\$cmd: ok\" || echo \"\$cmd: missing\"
         done
+        sudo -n true >/dev/null 2>&1 && echo \"sudo nopasswd: ok\" || echo \"sudo nopasswd: missing\"
         sysctl net.ipv4.tcp_ecn || true
         sysctl net.ipv4.tcp_ecn_option || true
     "

@@ -14,6 +14,12 @@ install_deps() {
     echo "=== installing on $label ==="
     "$@" bash -s <<'REMOTE'
 set -euo pipefail
+if ! sudo -n true >/dev/null 2>&1; then
+    echo "Passwordless sudo is required for remote automation." >&2
+    echo "On this VM, run: echo \"$USER ALL=(ALL) NOPASSWD:ALL\" | sudo tee /etc/sudoers.d/accecn" >&2
+    echo "Then run: sudo chmod 440 /etc/sudoers.d/accecn" >&2
+    exit 1
+fi
 if command -v apt-get >/dev/null; then
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

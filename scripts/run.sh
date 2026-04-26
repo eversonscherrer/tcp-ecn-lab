@@ -54,6 +54,15 @@ run_mode() {
     fi
     echo "$iface" > "$dir/server-iface.txt"
 
+    server_ssh "sudo -n true" >/dev/null 2>&1 || {
+        echo "Passwordless sudo is required on server VM. Run ./scripts/check.sh for details." >&2
+        exit 1
+    }
+    client_ssh "sudo -n true" >/dev/null 2>&1 || {
+        echo "Passwordless sudo is required on client VM. Run ./scripts/check.sh for details." >&2
+        exit 1
+    }
+
     cleanup_remote "$iface"
 
     server_ssh "cd '$REMOTE_DIR' && ./scripts/configure-ecn.sh '$mode'" | tee "$dir/server-ecn.log"
@@ -62,8 +71,8 @@ run_mode() {
     server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ./scripts/setup-qdisc.sh apply" \
         | tee "$dir/qdisc.log"
 
-    client_ssh "rm -f /tmp/accecn-handshake.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log"
-    server_ssh "rm -f /tmp/accecn-server.json /tmp/accecn-server.out"
+    client_ssh "sudo rm -f /tmp/accecn-handshake.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log /tmp/accecn-ss.out"
+    server_ssh "sudo rm -f /tmp/accecn-server.json /tmp/accecn-server.out"
 
     client_ssh "nohup sudo tcpdump -i any -nn -vv -w /tmp/accecn-handshake.pcap 'tcp port 5201' >/tmp/accecn-tcpdump.log 2>&1 &"
     server_ssh "nohup iperf3 -s -1 --json --logfile /tmp/accecn-server.json >/tmp/accecn-server.out 2>&1 &"
