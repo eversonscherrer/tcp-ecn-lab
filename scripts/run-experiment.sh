@@ -1,10 +1,8 @@
 #!/bin/bash
-# run-experiment.sh - Orchestrates ONE experimental run (one ECN mode).
-#
-# Run from the HOST. Coordinates client and server containers.
+# run-experiment.sh - Run one ECN mode inside the Linux VM.
 #
 # Usage:
-#   ./run-experiment.sh <mode> [duration]
+#   sudo ./scripts/run-experiment.sh <mode> [duration]
 #     mode: none | classic | accecn
 #     duration: seconds (default 30)
 
@@ -18,62 +16,70 @@ if [[ -z "$MODE" ]]; then
     exit 1
 fi
 
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "Run as root: sudo $0 $MODE $DURATION" >&2
+    exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RESULTS_DIR="$REPO_ROOT/results/$(date +%Y%m%d-%H%M%S)-$MODE"
 mkdir -p "$RESULTS_DIR"
 
-SERVER="accecn-server"
-CLIENT="accecn-client"
-SERVER_IP="10.99.0.10"
+CLIENT_NS="${CLIENT_NS:-accecn-client}"
+SERVER_NS="${SERVER_NS:-accecn-server}"
+SERVER_IP="${SERVER_IP:-10.99.0.10}"
+
+cleanup() {
+    "$REPO_ROOT/scripts/setup-network.sh" clear >/dev/null 2>&1 || true
+    ip netns exec "$CLIENT_NS" pkill tcpdump >/dev/null 2>&1 || true
+    ip netns exec "$SERVER_NS" pkill iperf3 >/dev/null 2>&1 || true
+    "$REPO_ROOT/scripts/setup-lab.sh" clear >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 echo "=== Run: mode=$MODE duration=${DURATION}s ==="
 echo "Results -> $RESULTS_DIR"
 
-# 1. Configure ECN on both sides
-docker exec "$SERVER" /experiment/scripts/configure-ecn.sh "$MODE" \
+"$REPO_ROOT/scripts/setup-lab.sh" apply | tee "$RESULTS_DIR/lab.log"
+
+NS="$SERVER_NS" "$REPO_ROOT/scripts/configure-ecn.sh" "$MODE" \
     | tee "$RESULTS_DIR/server-ecn.log"
-docker exec "$CLIENT" /experiment/scripts/configure-ecn.sh "$MODE" \
+NS="$CLIENT_NS" "$REPO_ROOT/scripts/configure-ecn.sh" "$MODE" \
     | tee "$RESULTS_DIR/client-ecn.log"
 
-# 2. Apply network impairment on the server side (egress to client)
-docker exec "$SERVER" /experiment/scripts/setup-network.sh apply \
-    | tee "$RESULTS_DIR/netem.log"
+"$REPO_ROOT/scripts/setup-network.sh" apply | tee "$RESULTS_DIR/netem.log"
 
-# 3. Start tcpdump on client to capture handshake
-docker exec -d "$CLIENT" bash -c \
-    "tcpdump -i eth0 -nn -vv -w /experiment/results/$(basename $RESULTS_DIR)/handshake.pcap 'tcp port 5201' 2>/dev/null"
+ip netns exec "$CLIENT_NS" tcpdump -i veth-client -nn -vv \
+    -w "$RESULTS_DIR/handshake.pcap" 'tcp port 5201' >/dev/null 2>&1 &
+TCPDUMP_PID=$!
 
-# 4. Start iperf3 server in background
-docker exec -d "$SERVER" bash -c \
-    "iperf3 -s -1 --json --logfile /experiment/results/$(basename $RESULTS_DIR)/iperf-server.json"
+ip netns exec "$SERVER_NS" iperf3 -s -1 --json \
+    --logfile "$RESULTS_DIR/iperf-server.json" &
+IPERF_SERVER_PID=$!
 
-# Give server a moment to start
 sleep 2
 
-# 5. Start ss sampler in background on client (snapshot every 0.5s)
-docker exec -d "$CLIENT" bash -c "
-    for i in \$(seq 1 $((DURATION * 2))); do
-        ts=\$(date +%s.%N)
-        ss -tin dst $SERVER_IP 2>/dev/null \
-            | awk -v ts=\$ts 'NR>1 {print ts\" \"\$0}' \
-            >> /experiment/results/$(basename $RESULTS_DIR)/ss-samples.log
+(
+    for _ in $(seq 1 $((DURATION * 2))); do
+        ts="$(date +%s.%N)"
+        ip netns exec "$CLIENT_NS" ss -tin dst "$SERVER_IP" 2>/dev/null \
+            | awk -v ts="$ts" 'NR>1 {print ts" "$0}' \
+            >> "$RESULTS_DIR/ss-samples.log"
         sleep 0.5
     done
-" &
+) &
 SS_BG=$!
 
-# 6. Run iperf3 client
 echo "Running iperf3 for ${DURATION}s..."
-docker exec "$CLIENT" iperf3 -c "$SERVER_IP" -t "$DURATION" -J \
+ip netns exec "$CLIENT_NS" iperf3 -c "$SERVER_IP" -R -t "$DURATION" -J \
     > "$RESULTS_DIR/iperf-client.json"
 
-# 7. Cleanup
 sleep 1
-docker exec "$CLIENT" pkill tcpdump 2>/dev/null || true
-docker exec "$SERVER" /experiment/scripts/setup-network.sh clear || true
-wait $SS_BG 2>/dev/null || true
+kill "$TCPDUMP_PID" >/dev/null 2>&1 || true
+wait "$TCPDUMP_PID" >/dev/null 2>&1 || true
+wait "$IPERF_SERVER_PID" >/dev/null 2>&1 || true
+wait "$SS_BG" >/dev/null 2>&1 || true
 
-# 8. Quick summary
 echo
 echo "=== Summary ==="
 python3 -c "

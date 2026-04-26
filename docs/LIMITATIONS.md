@@ -1,72 +1,41 @@
-# Limitações conhecidas do experimento
+# Limitações conhecidas
 
-Antes de tirar conclusões, é importante entender o que este setup mede — e o que ele **não** mede.
+Este projeto agora usa VirtualBox para evitar as limitações do Docker Desktop/LinuxKit no macOS. Ainda assim, algumas limitações continuam importantes.
 
-## 1. Containers compartilham o kernel do host
+## 1. O kernel da VM manda em tudo
 
-Docker e containerd não trazem seu próprio kernel. O kernel ativo é o do host. Isso significa:
+AccECN depende do kernel Linux da VM. A imagem Ubuntu usada no disco não basta: é necessário que o kernel em execução exponha `net.ipv4.tcp_ecn_option`.
 
-- Se o host roda kernel **< 6.18**, o sysctl `tcp_ecn_option` não existe e o modo `accecn` se comportará como ECN clássico.
-- A negociação AccECN só acontece se o kernel do host suportar.
-- `uname -r` dentro do container mostra o kernel do **host**, não da imagem.
+Verifique dentro da VM:
 
-**Verifique antes:** `docker run --rm ubuntu:24.04 uname -r`
+```bash
+uname -r
+sysctl net.ipv4.tcp_ecn_option
+```
 
-## 2. Kernel 7.0 ainda não está disponível em distros estáveis
+Se esse sysctl não existir, o modo `accecn` falha cedo.
 
-Linux 7.0 saiu em abril de 2026 e ainda não está em Ubuntu LTS, RHEL, Debian estável. Opções práticas para quem quer kernel 7.0:
+## 2. VirtualBox não fornece o kernel
 
-- **Distros rolling-release**: Arch, Fedora Rawhide, openSUSE Tumbleweed.
-- **Ubuntu mainline**: pacotes em `kernel.ubuntu.com/mainline/`.
-- **VM com kernel custom**: compile a partir de `kernel.org`.
+VirtualBox virtualiza hardware. Ele não adiciona suporte a AccECN nem qdiscs. Você ainda precisa instalar ou compilar um kernel adequado dentro da VM.
 
-Para o objetivo deste experimento — comparar **comportamento** do AccECN — qualquer kernel `>= 6.18` é suficiente. O que muda no 7.0 é apenas o default ativo, não a funcionalidade.
+## 3. O experimento usa namespaces, não duas máquinas
 
-## 3. Bridge Docker tem limitações de qdisc
+Client e server ficam na mesma VM, isolados por `ip netns` e conectados por `veth`. Isso é ótimo para reprodutibilidade e controle, mas não reproduz todos os efeitos de placas, switches e roteadores reais.
 
-O qdisc é aplicado na interface `eth0` do container. Isso afeta o **egress** do container, não a interface bridge do host. Para topologias mais realistas:
+## 4. fq_codel não é DualPI2
 
-- Use `--network host` e veth pares manuais.
-- Considere `netns` direto (sem Docker) para controle total.
-- Para topologia com router intermediário, adicione um terceiro container atuando como gateway com IP forwarding.
+`fq_codel ecn` marca pacotes e permite comparar ECN/AccECN, mas não é uma topologia L4S completa. L4S de ponta a ponta exigiria AccECN, congestion control escalável e um roteador com DualPI2 ou equivalente.
 
-## 4. AccECN precisa de AQM marcador para mostrar valor
+## 5. Resultados de uma run são ruidosos
 
-Sem um AQM que **marque** pacotes ECN-CE em vez de descartá-los, AccECN e ECN clássico se comportam como TCP comum. Por isso o `setup-network.sh` configura `fq_codel ecn` — sem isso, o experimento não revela diferença.
+Para análise séria:
 
-Variantes para experimentar:
-- `fq_codel ecn` (default deste repo)
-- `cake` (mais sofisticado, suporta ECN nativo)
-- `red ecn` (clássico, RFC 2309)
-- DualPI2 — necessário para L4S completo, mas requer patches/kernel específico.
+- rode cada modo várias vezes;
+- varie `RATE`, `DELAY`, `LOSS`;
+- calcule média e intervalo de confiança;
+- capture também handshake e `ss -tin` para confirmar o estado TCP.
 
-## 5. Métricas de cwnd em containers podem ser ruidosas
+## 6. macOS só orquestra
 
-`ss -tin` retorna cwnd em segmentos, mas o intervalo de coleta (0.5s) e a precisão variam. Para análise rigorosa:
-
-- Use `bpftrace` ou eBPF probes em `tcp_cong_avoid`.
-- Habilite `tcp_probe` (requer kernel module) para tracing por evento.
-- Considere `ss -tinm` para ver mais detalhes de memória/buffer.
-
-## 6. Variabilidade entre runs
-
-Resultados em uma única execução podem não ser representativos. Para análise séria:
-
-- Rode cada modo **N=10+** vezes.
-- Calcule médias com intervalos de confiança.
-- Varie `RATE`, `DELAY`, `LOSS` para mapear o espaço.
-
-## 7. Este experimento não testa L4S completo
-
-L4S = AccECN + DualPI2 (ou similar) + congestion control escalável (TCP Prague, BBRv3 com ECN). Este repo cobre apenas a parte do AccECN. Para L4S de ponta a ponta, é necessário um router intermediário com DualPI2 — não disponível em kernels mainline ainda.
-
-## Resumo do que este experimento mostra de fato
-
-✅ Negociação ECN/AccECN no handshake (via tcpdump)
-✅ Diferença de comportamento sob AQM marcador
-✅ Throughput, retransmissões, cwnd, RTT comparativos
-✅ Reproduzibilidade básica em qualquer host Linux moderno
-
-❌ Não mede L4S puro
-❌ Não mede impacto em internet pública (depende de roteadores reais)
-❌ Não substitui testes em escala
+Os scripts `vm-*` rodam no macOS, mas o experimento deve ser executado dentro da VM com `sudo`. Rodar `run-all.sh` diretamente no macOS não funciona, porque depende de `ip netns`, `tc`, `iperf3` e sysctls Linux.

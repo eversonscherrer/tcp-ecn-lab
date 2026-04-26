@@ -4,100 +4,116 @@
 
 Comparar empiricamente o comportamento do TCP Linux sob três configurações de Explicit Congestion Notification:
 
-1. **No ECN** — TCP puro, congestionamento sinalizado apenas por perda
-2. **Classic ECN** (RFC 3168) — um sinal binário por RTT
-3. **AccECN** (RFC 9768) — sinalização contínua e quantitativa por ACK
-
-## Hipóteses testáveis
-
-- **H1**: AccECN reduz retransmissões em relação a No ECN sob mesmo nível de congestionamento.
-- **H2**: AccECN entrega throughput igual ou superior ao Classic ECN, com cwnd mais estável.
-- **H3**: Sob AQM marcador (fq_codel ecn), tanto Classic ECN quanto AccECN evitam packet drops; sem AQM, todos se comportam similar a No ECN.
+1. **No ECN** - congestionamento sinalizado apenas por perda
+2. **Classic ECN** (RFC 3168) - sinalização ECN clássica
+3. **AccECN** (RFC 9768) - feedback ECN mais preciso, quando suportado pelo kernel
 
 ## Topologia
 
-```
-┌─────────────┐       labnet (10.99.0.0/24)       ┌─────────────┐
-│   client    │ ─────────────────────────────────► │   server    │
-│ 10.99.0.20  │ ◄───── tc qdisc (egress) ──────── │ 10.99.0.10  │
-└─────────────┘                                   └─────────────┘
+O experimento roda dentro de uma VM Linux no VirtualBox. Client e server são namespaces de rede conectados por um par `veth`.
+
+```text
+VM Linux
+
+┌──────────────────────────┐       veth       ┌──────────────────────────┐
+│ netns accecn-client      │ <--------------> │ netns accecn-server      │
+│ 10.99.0.20/24            │                  │ 10.99.0.10/24            │
+│ iperf3 client + tcpdump  │                  │ iperf3 server + tc qdisc │
+└──────────────────────────┘                  └──────────────────────────┘
 ```
 
-O qdisc é aplicado no **egress do servidor** porque é nessa direção que o tráfego bulk do `iperf3` flui (server → client por default no modo de download invertido, ou server-side processing). Para garantir que o impairment afete o caminho que importa, basta inverter `iperf3 -R` se necessário.
+O qdisc é aplicado no egress do namespace `accecn-server`. Por isso o cliente roda `iperf3 -R`: o fluxo principal sai do server, atravessa o qdisc e chega ao client.
+
+## Hipóteses testáveis
+
+- **H1**: No ECN tende a gerar mais retransmissões sob congestionamento.
+- **H2**: Classic ECN reduz drops quando o AQM marca CE.
+- **H3**: AccECN só é distinguível de Classic ECN quando o kernel negocia `tcp_ecn_option`.
 
 ## Variáveis controladas
 
 | Variável | Valor padrão | Como alterar |
-|---|---|---|
-| Rate bottleneck | 100 Mbps | `RATE=50mbit ./setup-network.sh apply` |
+|---|---:|---|
+| Rate bottleneck | 100 Mbps | `RATE=50mbit sudo ./scripts/run-all.sh 30` |
 | Delay one-way | 25 ms | `DELAY=50ms` |
 | Jitter | 2 ms | `JITTER=5ms` |
 | Loss | 0% | `LOSS=0.5%` |
-| Duração | 30 s | argumento do `run-experiment.sh` |
-| AQM | fq_codel ecn | editar `setup-network.sh` |
-| Congestion control | default (cubic) | `sysctl net.ipv4.tcp_congestion_control` |
+| Duração | 30 s | argumento de `run-experiment.sh` |
+| AQM | `fq_codel ecn` | editar `scripts/setup-network.sh` |
+| Congestion control | default do kernel | `sysctl net.ipv4.tcp_congestion_control` |
 
 ## Sysctls relevantes
 
 | Sysctl | Significado |
 |---|---|
-| `net.ipv4.tcp_ecn` | 0=off, 1=in/out, 2=in only |
-| `net.ipv4.tcp_ecn_option` | 0=off, 1=accept, 2=request (AccECN) |
-| `net.ipv4.tcp_ecn_fallback` | 1=fallback automático em conexões problemáticas |
-| `net.ipv4.tcp_congestion_control` | algoritmo (cubic, bbr, etc.) |
+| `net.ipv4.tcp_ecn` | 0=off, 1=ECN enabled |
+| `net.ipv4.tcp_ecn_option` | 0=off, 1=accept, 2=request AccECN |
+| `net.ipv4.tcp_ecn_fallback` | fallback automático em conexões problemáticas |
+| `net.ipv4.tcp_congestion_control` | algoritmo TCP, como cubic ou bbr |
 
 ## Validação da negociação
 
-A diferença visível no handshake:
+Capture dentro da VM:
 
-| Modo | SYN flags | SYN-ACK flags |
-|---|---|---|
-| No ECN | — | — |
-| Classic ECN | ECE + CWR | ECE |
-| AccECN | AE + ECE + CWR | AE + ECE (ou ECE) |
-
-Capture com:
 ```bash
-tcpdump -i eth0 -nn -vv 'tcp port 5201 and tcp[tcpflags] & tcp-syn != 0'
+sudo NS=accecn-client ./scripts/validate-accecn.sh capture
 ```
 
 Em conexão ativa:
+
 ```bash
-ss -tin '( dport = :5201 )' | grep -oE 'ecn|accecn|ecnseen'
+sudo NS=accecn-client ./scripts/validate-accecn.sh inspect
 ```
+
+Sinais esperados:
+
+| Modo | SYN | SYN-ACK |
+|---|---|---|
+| No ECN | sem ECE/CWR/AE | sem ECE/CWR/AE |
+| Classic ECN | ECE + CWR | ECE |
+| AccECN | AE + ECE + CWR | AE/ECE, conforme suporte do kernel |
 
 ## Métricas coletadas
 
-| Métrica | Fonte | Uso |
-|---|---|---|
-| Throughput interval | iperf3 JSON `intervals[].sum.bits_per_second` | gráfico temporal |
-| Retransmits | iperf3 JSON `end.sum_sent.retransmits` | barra comparativa |
-| cwnd | `ss -tin` parser regex | linha temporal |
-| RTT | iperf3 streams + `ss` | linha temporal |
-| ECN marks | tcpdump (CE bit no IP header) | contagem |
-| Handshake flags | pcap | validação binária |
+| Métrica | Fonte |
+|---|---|
+| Throughput por intervalo | `iperf3` JSON |
+| Retransmissões | `iperf3` JSON |
+| cwnd | amostras `ss -tin` |
+| RTT | `iperf3` e `ss` |
+| Handshake | `handshake.pcap` |
 
-## Procedimento (passo a passo)
+## Procedimento
 
-1. Subir containers: `docker compose up -d --build`
-2. Validar kernel: `docker exec accecn-server uname -r` (deve ser ≥ 6.18 para AccECN)
-3. Rodar bateria: `./scripts/run-all.sh 30`
-4. Parsear: `python3 analysis/parse-results.py results/`
-5. Plotar: `python3 analysis/plot-results.py results/`
-6. Inspecionar plots em `results/plots/`
+No macOS:
 
-## Análise estatística (recomendado)
+```bash
+ISO_PATH=/path/to/ubuntu-server.iso ./scripts/vm-create.sh
+./scripts/vm-provision.sh
+./scripts/vm-ssh.sh
+```
+
+Dentro da VM:
+
+```bash
+cd ~/accecn-tcp-experiment
+sudo ./scripts/run-all.sh 30
+python3 analysis/parse-results.py results/
+python3 analysis/plot-results.py results/
+```
+
+## Análise estatística recomendada
 
 Para resultados publicáveis:
 
-- Repetir cada modo N ≥ 10 vezes
-- Calcular média e desvio padrão por intervalo
-- Plotar com banda de confiança (matplotlib `fill_between`)
-- Teste de hipótese (Mann-Whitney U) para diferenças de retransmits/throughput
+- rode cada modo N >= 10 vezes;
+- calcule média, desvio padrão e intervalo de confiança;
+- varie `RATE`, `DELAY` e `LOSS`;
+- compare retransmissões e throughput com testes não paramétricos quando a distribuição for assimétrica.
 
 ## Extensões possíveis
 
-- Adicionar BBRv3 vs Cubic como segunda dimensão
-- Substituir fq_codel por DualPI2 (requer kernel patcheado) para L4S real
-- Adicionar terceiro container como roteador para topologia mais realista
-- Coletar via eBPF em vez de `ss` para precisão temporal
+- Adicionar BBRv3 vs CUBIC como segunda dimensão.
+- Trocar `fq_codel` por DualPI2 em kernel compatível.
+- Criar uma terceira namespace como roteador intermediário.
+- Coletar métricas via eBPF em vez de amostragem com `ss`.

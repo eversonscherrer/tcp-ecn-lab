@@ -1,19 +1,28 @@
 # AccECN TCP Experiment
 
-Experimento reproduzível em containers Linux para comparar empiricamente o comportamento do TCP em três configurações de ECN:
+Experimento reproduzível em uma VM Linux no VirtualBox para comparar empiricamente o comportamento do TCP em três configurações de ECN:
 
-1. **No ECN** — TCP tradicional, congestionamento via packet loss
-2. **Classic ECN** (RFC 3168) — um sinal binário por RTT
-3. **AccECN** (RFC 9768) — sinalização contínua e quantitativa por ACK
+1. **No ECN** - TCP tradicional, congestionamento via packet loss
+2. **Classic ECN** (RFC 3168) - sinalização ECN clássica
+3. **AccECN** (RFC 9768) - feedback ECN mais preciso, quando o kernel suporta
 
-> **Por que isso importa:** AccECN se tornou o default no kernel Linux 7.0 (abril/2026), promovendo uma mudança que estava em desenvolvimento desde 2018. Antes que esteja em todas as distros estáveis, vale entender o que muda na prática.
+O projeto roda no macOS usando VirtualBox, mas o experimento em si acontece dentro de uma VM Linux. Dentro da VM, os papéis de client e server são isolados com `ip netns`, ligados por um par `veth`, e o gargalo é criado com `tc`. O `iperf3` roda em modo reverse (`-R`) para o fluxo principal sair do server e atravessar o qdisc.
 
 ## TL;DR
 
+No macOS:
+
 ```bash
-docker compose up -d --build
-./scripts/run-all.sh 30
-pip install -r analysis/requirements.txt
+ISO_PATH=/path/to/ubuntu-server.iso ./scripts/vm-create.sh
+./scripts/vm-provision.sh
+./scripts/vm-ssh.sh
+```
+
+Dentro da VM:
+
+```bash
+cd ~/accecn-tcp-experiment
+sudo ./scripts/run-all.sh 30
 python3 analysis/parse-results.py results/
 python3 analysis/plot-results.py results/
 ```
@@ -22,150 +31,153 @@ Resultados em `results/plots/`.
 
 ## Pré-requisitos
 
-- Docker + Docker Compose v2
-- Kernel host **≥ 6.18** para AccECN funcional (containers herdam o kernel do host)
-- Python 3.10+ com `matplotlib` (para análise)
-- `~500 MB` de espaço em disco
+No macOS:
 
-Verifique seu kernel:
+- VirtualBox 7.x com `VBoxManage`
+- Uma ISO de Ubuntu Server ou outra distro Linux compatível
+- `ssh` e `rsync`
+
+Cheque o host:
+
+```bash
+./scripts/vm-check.sh
+```
+
+Na VM Linux:
+
+- Kernel **>= 6.18** para AccECN funcional
+- qdiscs `htb`, `netem` e `fq_codel`
+- `iproute2`, `iperf3`, `tcpdump`, `python3`
+
+Verifique dentro da VM:
+
 ```bash
 uname -r
+sysctl net.ipv4.tcp_ecn_option
+tc qdisc add dev lo root fq_codel ecn && tc qdisc del dev lo root
 ```
 
-Se `< 6.18`, o modo `accecn` se comportará como ECN clássico. Veja [docs/LIMITATIONS.md](docs/LIMITATIONS.md) para alternativas.
+Se `tcp_ecn_option` não existir, o modo `accecn` não é suportado por esse kernel.
 
-## Estrutura do repositório
+## Estrutura
 
-```
+```text
 accecn-tcp-experiment/
-├── README.md                    # este arquivo
-├── docker-compose.yml           # client + server containers
-├── docker/
-│   ├── Dockerfile               # Ubuntu 24.04 + iperf3 + tools
-│   └── entrypoint.sh
 ├── scripts/
-│   ├── configure-ecn.sh         # aplica modo ECN via sysctl
-│   ├── setup-network.sh         # tc qdisc + netem + fq_codel
-│   ├── validate-accecn.sh       # inspeciona handshake
-│   ├── run-experiment.sh        # roda 1 experimento
-│   └── run-all.sh               # roda os 3 modos em sequência
+│   ├── vm-create.sh          # cria VM VirtualBox a partir de ISO
+│   ├── vm-provision.sh       # instala dependências e sincroniza o repo
+│   ├── vm-sync.sh            # sincroniza arquivos para a VM
+│   ├── vm-ssh.sh             # entra na VM via SSH
+│   ├── setup-lab.sh          # cria namespaces client/server
+│   ├── configure-ecn.sh      # aplica modo ECN no namespace alvo
+│   ├── setup-network.sh      # aplica tc/netem/fq_codel no link server->client
+│   ├── validate-accecn.sh    # inspeciona handshake ou conexão ativa
+│   ├── run-experiment.sh     # roda um modo
+│   └── run-all.sh            # roda none/classic/accecn
 ├── analysis/
-│   ├── parse-results.py         # iperf3/ss → CSV
-│   ├── plot-results.py          # CSV → PNG
+│   ├── parse-results.py
+│   ├── plot-results.py
 │   └── requirements.txt
-├── results/                     # gerado pelos scripts
-└── docs/
-    ├── EXPERIMENT.md            # design detalhado
-    └── LIMITATIONS.md           # o que este experimento NÃO mede
+├── docs/
+│   ├── EXPERIMENT.md
+│   └── LIMITATIONS.md
+└── results/
 ```
 
-## Uso passo a passo
+## Uso
 
-### 1. Subir o ambiente
+### 1. Criar a VM
+
+Baixe uma ISO de Ubuntu Server e rode:
 
 ```bash
-docker compose up -d --build
-docker compose ps     # confirma client e server up
+ISO_PATH="$HOME/Downloads/ubuntu-server.iso" ./scripts/vm-create.sh
 ```
 
-### 2. Validar o kernel dentro do container
+Variáveis úteis:
 
 ```bash
-docker exec accecn-server uname -r
-docker exec accecn-server sysctl net.ipv4.tcp_ecn_option
+VM_NAME=accecn-lab
+VM_USER=accecn
+VM_PASS=accecn
+SSH_PORT=2222
+VM_CPUS=2
+VM_MEMORY_MB=4096
+VM_DISK_MB=30000
 ```
 
-Se o sysctl `tcp_ecn_option` não existir, seu kernel não suporta AccECN (precisa ≥ 6.18).
+### 2. Provisionar
 
-### 3. Validar negociação ECN no handshake
+Depois que a instalação da VM terminar e o SSH responder:
 
-Em um terminal:
 ```bash
-docker exec accecn-client tcpdump -i eth0 -nn -vv \
-    'tcp port 5201 and tcp[tcpflags] & tcp-syn != 0'
+./scripts/vm-provision.sh
 ```
 
-Em outro:
+Esse comando sincroniza o repositório para `/home/accecn/accecn-tcp-experiment`, instala os pacotes necessários e testa a criação dos namespaces.
+
+### 3. Rodar a bateria
+
 ```bash
-docker exec accecn-server /experiment/scripts/configure-ecn.sh accecn
-docker exec -d accecn-server iperf3 -s -1
-docker exec accecn-client iperf3 -c 10.99.0.10 -t 5
+./scripts/vm-ssh.sh
+cd ~/accecn-tcp-experiment
+sudo ./scripts/run-all.sh 30
 ```
 
-No `tcpdump`, procure por flags `[S], cksum ..., AE` no SYN do client e a reflexão no SYN-ACK do server.
+Saída por modo em:
 
-### 4. Rodar a bateria completa
-
-```bash
-./scripts/run-all.sh 30      # 30s por modo
+```text
+results/<timestamp>-<mode>/
 ```
 
-Saída em `results/<timestamp>-<mode>/`.
+### 4. Analisar
 
-### 5. Análise
+Dentro da VM:
 
 ```bash
-pip install -r analysis/requirements.txt
 python3 analysis/parse-results.py results/
 python3 analysis/plot-results.py results/
 ```
 
-Gera em `results/plots/`:
-- `throughput-comparison.png` — três linhas, throughput vs tempo
-- `retransmits-bar.png` — total de retransmissões por modo
-- `cwnd-evolution.png` — congestion window ao longo do tempo
-- `rtt-evolution.png` — RTT ao longo do tempo
-- `summary.csv` — tabela final consolidada
+Gera:
 
-## Interpretando os resultados
-
-**O que esperar sob `fq_codel ecn` ativo (default):**
-
-- **No ECN**: maior número de retransmissões, throughput oscilante (efeito sawtooth clássico do Reno/Cubic).
-- **Classic ECN**: retransmissões reduzidas (marcação substitui drop), mas cwnd ainda reage de forma binária.
-- **AccECN**: mesmas vantagens de Classic ECN, mas com cwnd mais estável e ajuste mais granular conforme o feedback contínuo.
-
-**Atenção**: a diferença entre Classic ECN e AccECN é **sutil** com Cubic. Para ver o impacto real do AccECN, troque o algoritmo para BBRv3 (que consome o feedback granular):
-
-```bash
-docker exec accecn-server sysctl -w net.ipv4.tcp_congestion_control=bbr
-```
+- `results/summary.csv`
+- `results/plots/throughput-comparison.png`
+- `results/plots/retransmits-bar.png`
+- `results/plots/cwnd-evolution.png`
+- `results/plots/rtt-evolution.png`
 
 ## Customização
 
-Variáveis de ambiente para o tc/netem:
+Variáveis de rede:
 
 ```bash
-RATE=50mbit DELAY=50ms LOSS=0.5% \
-    docker exec accecn-server /experiment/scripts/setup-network.sh apply
+RATE=50mbit DELAY=50ms JITTER=5ms LOSS=0.5% sudo ./scripts/run-all.sh 30
 ```
+
+Rodar apenas um modo:
+
+```bash
+sudo ./scripts/run-experiment.sh classic 10
+```
+
+Validar handshake:
+
+```bash
+sudo ./scripts/setup-lab.sh apply
+sudo NS=accecn-client ./scripts/validate-accecn.sh capture
+```
+
+## Interpretação
+
+Sob `fq_codel ecn`:
+
+- **No ECN** tende a ter mais retransmissões.
+- **Classic ECN** reduz drops quando há marcação CE.
+- **AccECN** só pode ser observado se o kernel expõe `net.ipv4.tcp_ecn_option`.
+
+A diferença entre Classic ECN e AccECN pode ser sutil com CUBIC. Para experimentos mais avançados, use um kernel e congestion control que consumam melhor feedback ECN granular.
 
 ## Limitações
 
-Este experimento tem várias limitações importantes — leia [docs/LIMITATIONS.md](docs/LIMITATIONS.md) antes de tirar conclusões.
-
-Resumo:
-- Containers compartilham kernel do host (não isolam AccECN)
-- fq_codel ≠ DualPI2 (L4S completo requer roteador específico)
-- Resultados em uma única run podem ser ruidosos — repita N×
-- Não substitui testes em escala/internet pública
-
-## Referências
-
-- [RFC 9768 — Accurate ECN Feedback in TCP](https://datatracker.ietf.org/doc/rfc9768/)
-- [RFC 9330 — L4S Architecture](https://datatracker.ietf.org/doc/rfc9330/)
-- [LWN — More accurate congestion notification for TCP](https://lwn.net/)
-- [Linux 7.0 release notes — KernelNewbies](https://kernelnewbies.org/Linux_7.0)
-
-## Licença
-
-MIT — veja `LICENSE`.
-
-## Contribuindo
-
-PRs bem-vindos para:
-- Suporte a IPv6
-- Integração com BBRv3
-- Topologia com router DualPI2
-- Coleta via eBPF/bpftrace
-- Testes automatizados em CI
+Leia [docs/LIMITATIONS.md](docs/LIMITATIONS.md) antes de tirar conclusões.

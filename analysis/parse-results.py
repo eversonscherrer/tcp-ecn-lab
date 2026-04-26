@@ -118,12 +118,15 @@ def main() -> int:
         parse_ss(run_dir / "ss-samples.log", run_dir / "ss-parsed.csv")
         print(f"Parsed: {run_dir.name}")
 
-    if summary_rows:
-        with (root / "summary.csv").open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
-            w.writeheader()
-            w.writerows(summary_rows)
-        print(f"\nSummary written: {root / 'summary.csv'}")
+    if not summary_rows:
+        print(f"No valid iperf client results found under {root}", file=sys.stderr)
+        return 1
+
+    with (root / "summary.csv").open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
+        w.writeheader()
+        w.writerows(summary_rows)
+    print(f"\nSummary written: {root / 'summary.csv'}")
     return 0
 
 

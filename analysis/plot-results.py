@@ -34,7 +34,7 @@ def load_runs(root: Path) -> dict:
         if not d.is_dir():
             continue
         match = re.match(r"(\d{8}-\d{6})-(\w+)", d.name)
-        if match:
+        if match and (d / "timeseries.csv").exists():
             runs[match.group(2)].append(d)
     # Use the latest run per mode
     return {mode: dirs[-1] for mode, dirs in runs.items()}
@@ -145,7 +145,7 @@ def main() -> int:
     root = Path(sys.argv[1])
     runs = load_runs(root)
     if not runs:
-        print(f"No runs found under {root}")
+        print(f"No parsed runs with timeseries.csv found under {root}", file=sys.stderr)
         return 1
     out_dir = root / "plots"
     out_dir.mkdir(exist_ok=True)

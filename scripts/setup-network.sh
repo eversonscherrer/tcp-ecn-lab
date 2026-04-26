@@ -1,24 +1,13 @@
 #!/bin/bash
-# setup-network.sh - Apply tc qdiscs to emulate a congested link.
+# setup-network.sh - Apply tc qdiscs to emulate a congested server->client link.
 #
-# Uses fq_codel with ECN marking enabled, which is what makes ECN actually
-# useful: without an AQM that marks packets, ECN/AccECN have nothing to do.
-#
-# Usage:
-#   ./setup-network.sh apply    # apply impairment
-#   ./setup-network.sh clear    # remove all qdiscs
-#   ./setup-network.sh show     # show current qdisc
-#
-# Tunables (env vars):
-#   IFACE       - interface (default: eth0)
-#   RATE        - bottleneck rate (default: 100mbit)
-#   DELAY       - one-way delay (default: 25ms)
-#   JITTER      - jitter (default: 2ms)
-#   LOSS        - random loss (default: 0%)
+# Run inside the Linux VM as root. Defaults target the server namespace created
+# by setup-lab.sh.
 
 set -euo pipefail
 
-IFACE="${IFACE:-eth0}"
+NS="${NS:-accecn-server}"
+IFACE="${IFACE:-veth-server}"
 RATE="${RATE:-100mbit}"
 DELAY="${DELAY:-25ms}"
 JITTER="${JITTER:-2ms}"
@@ -26,35 +15,55 @@ LOSS="${LOSS:-0%}"
 
 ACTION="${1:-apply}"
 
+run_tc() {
+    if [[ -n "$NS" ]]; then
+        ip netns exec "$NS" tc "$@"
+    else
+        tc "$@"
+    fi
+}
+
+cleanup_partial() {
+    run_tc qdisc del dev "$IFACE" root 2>/dev/null || true
+}
+
+fail_apply() {
+    cleanup_partial
+    echo "ERROR: failed to apply qdisc tree." >&2
+    echo "This kernel must support htb, netem, and fq_codel with ECN." >&2
+    exit 1
+}
+
 case "$ACTION" in
     apply)
-        echo "=== Applying network impairment on $IFACE ==="
+        trap fail_apply ERR
+
+        echo "=== Applying network impairment on ${NS:-root}:$IFACE ==="
         echo "  rate=$RATE delay=$DELAY jitter=$JITTER loss=$LOSS"
 
-        # Clear any existing qdisc first
-        tc qdisc del dev "$IFACE" root 2>/dev/null || true
+        cleanup_partial
 
-        # Hierarchical: HTB rate-limits to create congestion, fq_codel does ECN marking
-        tc qdisc add dev "$IFACE" root handle 1: htb default 10
-        tc class add dev "$IFACE" parent 1: classid 1:10 htb \
+        run_tc qdisc add dev "$IFACE" root handle 1: htb default 10
+        run_tc class add dev "$IFACE" parent 1: classid 1:10 htb \
             rate "$RATE" ceil "$RATE"
-        tc qdisc add dev "$IFACE" parent 1:10 handle 10: \
+        run_tc qdisc add dev "$IFACE" parent 1:10 handle 10: \
+            netem delay "$DELAY" "$JITTER" loss "$LOSS"
+        run_tc qdisc add dev "$IFACE" parent 10:1 handle 100: \
             fq_codel ecn limit 1000 target 5ms
 
-        # netem on top adds delay/jitter/loss
-        tc qdisc add dev "$IFACE" parent 10: handle 100: \
-            netem delay "$DELAY" "$JITTER" loss "$LOSS"
-
         echo "=== Final qdisc tree ==="
-        tc -s qdisc show dev "$IFACE"
+        run_tc -s qdisc show dev "$IFACE"
+        run_tc -s class show dev "$IFACE"
+
+        trap - ERR
         ;;
     clear)
-        tc qdisc del dev "$IFACE" root 2>/dev/null || true
-        echo "Cleared qdisc on $IFACE"
+        cleanup_partial
+        echo "Cleared qdisc on ${NS:-root}:$IFACE"
         ;;
     show)
-        tc -s qdisc show dev "$IFACE"
-        tc -s class show dev "$IFACE"
+        run_tc -s qdisc show dev "$IFACE"
+        run_tc -s class show dev "$IFACE"
         ;;
     *)
         echo "Usage: $0 {apply|clear|show}"
