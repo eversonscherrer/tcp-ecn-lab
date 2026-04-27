@@ -82,10 +82,10 @@ run_mode() {
     server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ECN_TARGET='$ECN_TARGET' ./scripts/setup-qdisc.sh apply" \
         | tee "$dir/qdisc.log"
 
-    client_ssh "sudo rm -f /tmp/accecn-handshake.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log /tmp/accecn-ss.out"
+    client_ssh "sudo rm -f /tmp/accecn-handshake.pcap /tmp/accecn-flow.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log /tmp/accecn-ss.out"
     server_ssh "sudo rm -f /tmp/accecn-server.json /tmp/accecn-server.out /tmp/accecn-server-ss.log"
 
-    client_ssh "nohup sudo tcpdump -i any -nn -vv -c 20 -w /tmp/accecn-handshake.pcap 'tcp port 5201 and (tcp[tcpflags] & tcp-syn != 0)' >/tmp/accecn-tcpdump.log 2>&1 &"
+    client_ssh "nohup sudo tcpdump -i any -nn -vv -s 0 -w /tmp/accecn-flow.pcap 'tcp port 5201' >/tmp/accecn-tcpdump.log 2>&1 &"
     server_ssh "nohup iperf3 -s -1 --json --logfile /tmp/accecn-server.json >/tmp/accecn-server.out 2>&1 &"
 
     sleep 2
@@ -103,8 +103,13 @@ run_mode() {
     server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' ./scripts/setup-qdisc.sh show" \
         > "$dir/qdisc-final.log" || true
     cleanup_remote "$iface"
+    client_ssh "sudo tcpdump -r /tmp/accecn-flow.pcap -w /tmp/accecn-handshake.pcap 'tcp[tcpflags] & tcp-syn != 0' >/dev/null 2>&1 || true"
 
+    scp -P "$CLIENT_PORT" $SSH_OPTS "$CLIENT_USER@$CLIENT_HOST:/tmp/accecn-flow.pcap" "$dir/flow.pcap" >/dev/null 2>&1 || true
     scp -P "$CLIENT_PORT" $SSH_OPTS "$CLIENT_USER@$CLIENT_HOST:/tmp/accecn-handshake.pcap" "$dir/handshake.pcap" >/dev/null 2>&1 || true
+    if [[ -s "$dir/flow.pcap" && ! -s "$dir/handshake.pcap" ]]; then
+        tcpdump -r "$dir/flow.pcap" -w "$dir/handshake.pcap" 'tcp[tcpflags] & tcp-syn != 0' >/dev/null 2>&1 || true
+    fi
     scp -P "$CLIENT_PORT" $SSH_OPTS "$CLIENT_USER@$CLIENT_HOST:/tmp/accecn-ss.log" "$dir/ss-samples.log" >/dev/null 2>&1 || true
     scp -P "$SERVER_PORT" $SSH_OPTS "$SERVER_USER@$SERVER_HOST:/tmp/accecn-server.json" "$dir/iperf-server.json" >/dev/null 2>&1 || true
     scp -P "$SERVER_PORT" $SSH_OPTS "$SERVER_USER@$SERVER_HOST:/tmp/accecn-server-ss.log" "$dir/server-ss.log" >/dev/null 2>&1 || true

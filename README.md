@@ -38,7 +38,8 @@ For each mode (`none` → `classic` → `accecn` → `dctcp`) the orchestrator:
    - **fq_codel ecn** — AQM with ECN marking (configurable `ECN_TARGET`, default `5ms`)
 3. Starts `iperf3 -s` on the server and `iperf3 -c -R` on the client.
 4. Samples `ss -tin` every 500 ms on **both** sides (client: RTT / receiver window; server: sender cwnd).
-5. Captures the TCP handshake with `tcpdump` to verify ECN option negotiation.
+5. Captures the full TCP flow with `tcpdump`, then derives a small handshake pcap
+   for quick SYN/SYN-ACK inspection.
 6. After the transfer, collects `tc -s qdisc show` to record ECN marks and packet drops.
 7. Downloads all artefacts and runs `analysis/parse-results.py` → `results/summary.csv`.
 
@@ -48,8 +49,8 @@ For each mode (`none` → `classic` → `accecn` → `dctcp`) the orchestrator:
 |------|-----------|-------------------|--------------------------|--------|
 | `none` | 0 | — | cubic | No ECN; fq_codel drops instead of marking → throughput collapses |
 | `classic` | 1 | 0 | cubic | RFC 3168 ECN; fq_codel marks; binary cwnd halving on each CE |
-| `accecn` | 1 | 2 | cubic | RFC 9331 AccECN; ACKs carry exact CE count; Cubic still halves |
-| `dctcp` | 1 | 2 | dctcp | DCTCP uses the AccECN CE count for proportional cwnd reduction |
+| `accecn` | 3 | 2 | cubic | RFC 9331 AccECN; ACKs carry exact CE count; Cubic still halves |
+| `dctcp` | 3 | 2 | dctcp | DCTCP uses the AccECN CE count for proportional cwnd reduction |
 
 ## Experimental Results
 
@@ -176,6 +177,9 @@ python3 analysis/parse-results.py
 
 # Generate results/comparison.png (4-panel comparison chart)
 python3 analysis/plot-results.py
+
+# Validate packet captures for ECN/AccECN evidence
+python3 analysis/validate-pcaps.py
 ```
 
 Both scripts work from any working directory; paths are resolved relative to the script
@@ -189,7 +193,8 @@ location. The chart adapts automatically to whichever modes are present in the d
 | `iperf-server.json` | Server-side iperf3 JSON |
 | `ss-samples.log` | Client `ss -tin` samples every 500 ms (RTT, receiver window) |
 | `server-ss.log` | Server `ss -tin` samples every 500 ms (sender cwnd) |
-| `handshake.pcap` | tcpdump capture of TCP SYN/SYN-ACK (verify ECN options) |
+| `flow.pcap` | Full tcpdump capture for `tcp port 5201` (verify AccECN options and ECT/CE marking) |
+| `handshake.pcap` | SYN/SYN-ACK packets extracted from `flow.pcap` for quick ECN setup inspection |
 | `qdisc.log` | `tc qdisc show` at test start |
 | `qdisc-final.log` | `tc -s qdisc show` at test end (`ecn_mark`, `pkt_dropped`) |
 | `params.txt` | Run parameters: `rate`, `delay`, `ecn_target`, `streams` |
@@ -212,6 +217,10 @@ location. The chart adapts automatically to whichever modes are present in the d
 | `cwnd_mean` | Mean sender cwnd from `server-ss.log` |
 | `cwnd_min` | Minimum sender cwnd (captures worst congestion response) |
 
+`validate-pcaps.py` writes `results/pcap-validation.csv` with packet-level evidence:
+ECT/CE packets, CE packets, TCP AE-bit packets, AccECN option packets, and SYNs that
+look like Classic ECN or AccECN setup.
+
 ## AccECN Kernel Requirement
 
 AccECN requires `net.ipv4.tcp_ecn_option` to exist in `/proc/sys`. This sysctl was
@@ -219,7 +228,8 @@ added in Linux 6.x. If it is absent the `accecn` and `dctcp` modes exit with an 
 this is expected on older kernels.
 
 ```bash
-sysctl net.ipv4.tcp_ecn_option   # must return 0, 1, or 2
+sysctl net.ipv4.tcp_ecn          # must accept value 3 for AccECN initiation
+sysctl net.ipv4.tcp_ecn_option   # must return 0, 1, 2, or 3
 ```
 
 DCTCP is available as a loadable kernel module and is loaded automatically by

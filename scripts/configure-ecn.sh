@@ -4,7 +4,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 if [[ -z "$MODE" ]]; then
-    echo "Usage: $0 {none|classic|accecn}" >&2
+    echo "Usage: $0 {none|classic|accecn|dctcp}" >&2
     exit 1
 fi
 
@@ -46,11 +46,11 @@ case "$MODE" in
         apply_sysctl net.ipv4.tcp_ecn_option 0 optional
         ;;
     accecn)
-        apply_sysctl net.ipv4.tcp_ecn 1
+        apply_sysctl net.ipv4.tcp_ecn 3
         apply_sysctl net.ipv4.tcp_ecn_option 2
         ;;
     dctcp)
-        apply_sysctl net.ipv4.tcp_ecn 1
+        apply_sysctl net.ipv4.tcp_ecn 3
         apply_sysctl net.ipv4.tcp_ecn_option 2
         sudo modprobe tcp_dctcp 2>/dev/null || true
         apply_sysctl net.ipv4.tcp_congestion_control dctcp
