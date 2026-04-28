@@ -54,66 +54,78 @@ For each mode (`none` → `classic` → `accecn` → `dctcp`) the orchestrator:
 
 ## Experimental Results
 
-All experiments ran on kernel **7.0.0-14-generic**, link rate **100 Mbit/s**,
-one-way delay **25 ms ± 2 ms** (RTT ≈ 50 ms).
+All validated experiments below ran on kernel **7.0.0-14-generic**, link rate
+**100 Mbit/s**, one-way delay **25 ms ± 2 ms**, `fq_codel target 5ms`, and one
+iperf stream. These runs were collected after fixing AccECN configuration to use
+`net.ipv4.tcp_ecn=3`.
 
-### Scenario 1 — Baseline (fq_codel target 5 ms, 1 stream)
+### Corrected 60 s run
 
-| Mode | Recv throughput | fq_codel marks | fq_codel drops |
-|------|----------------|----------------|----------------|
-| No ECN | ~0.2 Mbps | 0 | 4 |
-| Classic ECN | ~93 Mbps | 18 | 0 |
-| AccECN | ~93 Mbps | 17 | 0 |
-| DCTCP+AccECN | ~95 Mbps | 17 | 0 |
+| Mode | Recv throughput | Min non-zero interval | Stddev | fq_codel marks | fq_codel drops | Mean cwnd |
+|------|----------------:|----------------------:|-------:|---------------:|---------------:|----------:|
+| No ECN | 9.42 Mbps | 6.28 Mbps | 27.42 | 0 | 1 | 16.7 |
+| Classic ECN | 93.78 Mbps | 79.61 Mbps | 2.97 | 16 | 0 | 100.2 |
+| AccECN | 92.87 Mbps | 78.56 Mbps | 3.08 | 19 | 0 | 122.4 |
+| DCTCP+AccECN | 90.70 Mbps | 9.43 Mbps | 15.53 | 3,899 | 0 | 133.4 |
 
-With the default 5 ms target, ECN marks are rare (~17 per 60 s run). Cubic's binary
-halving is triggered infrequently, so Classic ECN, AccECN, and DCTCP perform similarly.
-The dramatic difference is between **No ECN and everything else**: fq_codel drops packets
-for non-ECN connections, causing Cubic to repeatedly halve and never recover.
+### Corrected 120 s run
 
-### Scenario 2 — Aggressive marking (fq_codel target 1 ms, 1 stream)
+| Mode | Recv throughput | Min non-zero interval | Stddev | fq_codel marks | fq_codel drops | Mean cwnd |
+|------|----------------:|----------------------:|-------:|---------------:|---------------:|----------:|
+| No ECN | 0.10 Mbps | 12.57 Mbps | n/a | 0 | 4 | 6.4 |
+| Classic ECN | 93.77 Mbps | 77.54 Mbps | 2.98 | 32 | 0 | 122.9 |
+| AccECN | 92.98 Mbps | 78.56 Mbps | 2.70 | 33 | 0 | 120.8 |
+| DCTCP+AccECN | 92.75 Mbps | 9.43 Mbps | 11.21 | 8,393 | 0 | 137.5 |
 
-| Mode | Recv throughput | fq_codel marks |
-|------|----------------|----------------|
-| No ECN | ~9 Mbps | 0 (drops) |
-| Classic ECN | **82 Mbps** | ~40 |
-| AccECN | **83 Mbps** | ~44 |
-| DCTCP+AccECN | **95 Mbps** | **4 538** |
+### Packet-capture validation
 
-Reducing the target to 1 ms causes fq_codel to mark far more aggressively. This exposes
-the key architectural difference:
+The new `flow.pcap` files show that the corrected AccECN and DCTCP runs really
+negotiate and use AccECN. Classic ECN does not.
 
-- **Classic ECN / AccECN with Cubic**: each CE mark triggers a binary halving of cwnd
-  (÷2), even if only a tiny fraction of packets were marked. With 40+ marks per run,
-  throughput drops to ~82 Mbps.
-- **DCTCP+AccECN**: DCTCP reads the exact CE-marked byte count from AccECN ACK options
-  and scales the cwnd reduction proportionally to the congestion fraction. Despite
-  receiving **4 538 marks**, throughput stays at **95 Mbps** — the same as with no
-  congestion signal at all.
+| Run | Mode | AE packets | AccECN option packets | AccECN SYNs | Classic ECN SYNs |
+|-----|------|-----------:|----------------------:|------------:|-----------------:|
+| 60 s | Classic ECN | 0 | 0 | 0 | 2 |
+| 60 s | AccECN | 2 | 123,513 | 2 | 0 |
+| 60 s | DCTCP+AccECN | 4 | 119,181 | 2 | 0 |
+| 120 s | Classic ECN | 0 | 0 | 0 | 2 |
+| 120 s | AccECN | 2 | 246,683 | 2 | 0 |
+| 120 s | DCTCP+AccECN | 4 | 241,879 | 2 | 0 |
 
-### Scenario 3 — Multiple competing flows (fq_codel target 1 ms, 4 streams)
+### Updated conclusions
 
-| Mode | Recv throughput | Notes |
-|------|----------------|-------|
-| No ECN | ~12 Mbps | Per-flow drops cause repeated collapse across all streams |
-| Classic ECN | ~95 Mbps | fq_codel isolates flows; marks spread evenly |
-| AccECN | ~95 Mbps | Same as Classic with Cubic |
-| DCTCP+AccECN | **96 Mbps** | Highest and most stable aggregate throughput |
+The original `accecn` runs were not valid AccECN evidence. They used
+`tcp_ecn=1`, so packet captures showed Classic ECN SYN negotiation and no TCP
+AE bit or AccECN option. The corrected runs use `tcp_ecn=3`, and the new pcaps
+confirm AccECN negotiation.
 
-With 4 parallel streams fq_codel's per-flow fair queuing distributes marks across flows,
-reducing the synchronization penalty of binary halving. The aggregate gap between
-Classic ECN and DCTCP narrows, but the sender-side **cwnd stability** difference remains
-clearly visible in the `server-ss.log` time series.
+With the default 5 ms `fq_codel` target, **Classic ECN and AccECN with Cubic are
+nearly identical in throughput**. This is expected: AccECN improves feedback
+accuracy, but Cubic still reacts to congestion in a Classic ECN-like way. In
+these runs, AccECN is a protocol-level difference more than a throughput win.
 
-### Summary: what differentiates each mode
+**No ECN collapses under the same queue discipline.** When packets are not
+ECT-capable, `fq_codel ecn` has to drop instead of marking. The 60 s run still
+delivered 9.42 Mbps, but the 120 s run fell to 0.10 Mbps, showing that the
+non-ECN case is unstable and highly sensitive to drop timing.
+
+**DCTCP+AccECN receives far more CE marks and keeps high average throughput, but
+it is not the smoothest result in this setup.** DCTCP saw 3,899 marks in 60 s
+and 8,393 marks in 120 s, versus only 16-33 marks for Classic/AccECN Cubic.
+Average throughput stayed close to line rate, but the low minimum throughput and
+higher standard deviation show startup or transient dips that need more targeted
+analysis before claiming DCTCP is strictly more stable here.
+
+### What differentiates each mode now
 
 | Observation | No ECN | Classic ECN | AccECN (Cubic) | DCTCP+AccECN |
 |-------------|--------|-------------|----------------|--------------|
-| Drops under congestion | yes | no | no | no |
-| Throughput collapse | yes | no | no | no |
-| cwnd oscillation (sawtooth) | severe | moderate | moderate | minimal |
-| Marks absorbed proportionally | — | no | no | **yes** |
-| Sensitive to mark frequency | — | **yes** | **yes** | no |
+| Negotiates AccECN | no | no | yes | yes |
+| Uses AccECN TCP option | no | no | yes | yes |
+| Avoids fq_codel drops | no | yes | yes | yes |
+| Maintains high average throughput | no | yes | yes | yes |
+| Clear throughput gain over Classic ECN | no | baseline | no | not at target 5 ms |
+| Receives many proportional CE samples | no | no | no | yes |
+| Needs more stability analysis | yes | no | no | yes |
 
 ## Setup
 
