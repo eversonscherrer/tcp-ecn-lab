@@ -14,6 +14,8 @@ ECN_TARGET="${ECN_TARGET:-5ms}"
 # Number of parallel iperf3 streams. Use STREAMS=4 to stress the link and
 # make AccECN's proportional congestion feedback more visible.
 STREAMS="${STREAMS:-1}"
+# Optional CC algorithm override (e.g. bbr, reno). Empty = use mode default (cubic/dctcp).
+CC_ALGO="${CC_ALGO:-}"
 # Space-separated list of modes to run. Override to run a subset or add dctcp.
 # Example: MODES="none classic accecn dctcp" ./scripts/run.sh 60
 RUN_MODES="${MODES:-none classic accecn}"
@@ -72,12 +74,12 @@ run_mode() {
 
     cleanup_remote "$iface"
 
-    server_ssh "cd '$REMOTE_DIR' && ./scripts/configure-ecn.sh '$mode'" | tee "$dir/server-ecn.log"
-    client_ssh "cd '$REMOTE_DIR' && ./scripts/configure-ecn.sh '$mode'" | tee "$dir/client-ecn.log"
+    server_ssh "cd '$REMOTE_DIR' && CC_ALGO='${CC_ALGO:-}' ./scripts/configure-ecn.sh '$mode'" | tee "$dir/server-ecn.log"
+    client_ssh "cd '$REMOTE_DIR' && CC_ALGO='${CC_ALGO:-}' ./scripts/configure-ecn.sh '$mode'" | tee "$dir/client-ecn.log"
 
     # Save run parameters for later analysis/filtering
-    printf 'rate=%s\ndelay=%s\njitter=%s\nloss=%s\necn_target=%s\nstreams=%s\n' \
-        "$RATE" "$DELAY" "$JITTER" "$LOSS" "$ECN_TARGET" "$STREAMS" > "$dir/params.txt"
+    printf 'rate=%s\ndelay=%s\njitter=%s\nloss=%s\necn_target=%s\nstreams=%s\ncc_algo=%s\n' \
+        "$RATE" "$DELAY" "$JITTER" "$LOSS" "$ECN_TARGET" "$STREAMS" "${CC_ALGO:-}" > "$dir/params.txt"
 
     server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ECN_TARGET='$ECN_TARGET' ./scripts/setup-qdisc.sh apply" \
         | tee "$dir/qdisc.log"

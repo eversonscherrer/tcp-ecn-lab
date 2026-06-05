@@ -61,4 +61,12 @@ case "$MODE" in
         ;;
 esac
 
+# Optional CC override — honoured for all modes except dctcp, which always uses dctcp.
+if [[ -n "${CC_ALGO:-}" && "$MODE" != "dctcp" ]]; then
+    if [[ "$CC_ALGO" == "bbr" ]]; then
+        sudo modprobe tcp_bbr 2>/dev/null || true
+    fi
+    apply_sysctl net.ipv4.tcp_congestion_control "$CC_ALGO"
+fi
+
 sysctl -a 2>/dev/null | grep -E 'net.ipv4.tcp_ecn|tcp_congestion_control' || true

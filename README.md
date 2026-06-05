@@ -127,6 +127,50 @@ analysis before claiming DCTCP is strictly more stable here.
 | Receives many proportional CE samples | no | no | no | yes |
 | Needs more stability analysis | yes | no | no | yes |
 
+---
+
+## T01 — Packet Loss Sweep
+
+**Goal:** Evaluate how each ECN mode sustains throughput as packet loss increases from 0 % to 5 %.
+**Setup:** kernel 7.0.0-22-generic, 100 Mbit/s, 25 ms ± 2 ms delay, fq_codel target 5 ms, 60 s runs, 1 stream.
+
+![T01 Loss Sweep](results/t01-loss-sweep.png)
+
+### Results
+
+| Loss | No ECN | Classic ECN | AccECN | DCTCP+AccECN |
+|-----:|-------:|------------:|-------:|-------------:|
+| 0 % | 9.73 Mbps | 87.01 Mbps | 93.42 Mbps | 95.12 Mbps |
+| 0.1 % | 28.23 Mbps | 33.42 Mbps | 37.94 Mbps | 40.37 Mbps |
+| 0.5 % | 0.73 Mbps | 12.04 Mbps | 9.59 Mbps | 10.83 Mbps |
+| 1.0 % | 6.46 Mbps | 6.97 Mbps | 8.23 Mbps | 7.53 Mbps |
+| 2.0 % | 4.65 Mbps | 4.79 Mbps | 4.35 Mbps | 5.92 Mbps |
+| 5.0 % | 2.29 Mbps | 2.86 Mbps | 2.36 Mbps | 2.83 Mbps |
+
+### T01 Conclusions
+
+- **ECN is critical at 0 % loss.** Without ECN, fq_codel must *drop* packets instead of marking them, causing throughput to collapse to 9.73 Mbps vs 87–95 Mbps for ECN-capable modes.
+- **At 0.5 % loss, No ECN collapses completely (0.73 Mbps)**, while ECN modes still deliver 9–12 Mbps — a ~15× advantage.
+- **Above 1 % loss, all modes converge** to similarly low throughput (2–8 Mbps). At that point, actual packet loss dominates and ECN marking provides diminishing returns.
+- **DCTCP+AccECN consistently leads** among ECN modes, especially at low-to-medium loss, owing to its proportional congestion response.
+- The practical takeaway: ECN (any variant) is a prerequisite for predictable throughput when the network relies on AQM for congestion management.
+
+### Running T01
+
+```bash
+# Full sweep — 6 loss levels × 4 modes × 60 s ≈ 30 min
+./scripts/run-t01-loss-sweep.sh
+
+# Custom: only 3 modes, 30 s runs
+DURATION=30 MODES="none classic accecn" ./scripts/run-t01-loss-sweep.sh
+
+# Analyse and plot
+python3 analysis/parse-results.py
+python3 analysis/plot-t01-loss-sweep.py
+```
+
+---
+
 ## Setup
 
 ### Prerequisites
@@ -161,6 +205,8 @@ cp .env.example .env
 
 ## Running Experiments
 
+### Baseline run (single mode comparison)
+
 ```bash
 # Quick smoke test (5 s per mode)
 ./scripts/run.sh 5
@@ -178,8 +224,29 @@ MODES="none classic accecn dctcp" ECN_TARGET=1ms STREAMS=4 ./scripts/run.sh 60
 RATE=50mbit DELAY=50ms JITTER=5ms ./scripts/run.sh 60
 ```
 
+### T01 — Packet loss sweep
+
+```bash
+# Full sweep: 0 % → 0.1 % → 0.5 % → 1 % → 2 % → 5 % × 4 modes × 60 s
+./scripts/run-t01-loss-sweep.sh
+
+# Override loss levels or duration
+LOSS_VALUES="0% 1% 5%" DURATION=30 ./scripts/run-t01-loss-sweep.sh
+```
+
+### T02 — Congestion-control algorithm sweep
+
+```bash
+# Tests Cubic, Reno, BBR × (none / classic / accecn) + DCTCP mode, 60 s each
+./scripts/run-t02-cc-sweep.sh
+
+# Only Cubic and BBR, 30 s
+CC_ALGOS="cubic bbr" DURATION=30 ./scripts/run-t02-cc-sweep.sh
+```
+
 Results are saved under `results/<timestamp>-<mode>/`. Each directory also contains a
-`params.txt` with the exact environment variables used for that run.
+`params.txt` with the exact environment variables used for that run, including `loss` and
+`cc_algo` for T01/T02 runs.
 
 ## Analysis
 
@@ -187,15 +254,21 @@ Results are saved under `results/<timestamp>-<mode>/`. Each directory also conta
 # (Re-)generate summary.csv from all result directories
 python3 analysis/parse-results.py
 
-# Generate results/comparison.png (4-panel comparison chart)
+# Generate results/comparison.png (baseline 4-panel chart)
 python3 analysis/plot-results.py
+
+# Generate results/t01-loss-sweep.png (T01: throughput vs loss rate)
+python3 analysis/plot-t01-loss-sweep.py
+
+# Generate results/t02-cc-sweep.png (T02: CC algo × ECN mode heatmap)
+python3 analysis/plot-t02-cc-sweep.py
 
 # Validate packet captures for ECN/AccECN evidence
 python3 analysis/validate-pcaps.py
 ```
 
-Both scripts work from any working directory; paths are resolved relative to the script
-location. The chart adapts automatically to whichever modes are present in the data.
+All scripts work from any working directory; paths are resolved relative to the script
+location. Charts adapt automatically to whichever modes and parameters are present in the data.
 
 ### Output files per run
 
@@ -217,17 +290,25 @@ location. The chart adapts automatically to whichever modes are present in the d
 
 | Column | Description |
 |--------|-------------|
+| `timestamp` | Run timestamp (`YYYYMMDD-HHMMSS`) |
 | `mode` | `none`, `classic`, `accecn`, or `dctcp` |
 | `ecn_target` | fq_codel marking threshold used in this run |
 | `streams` | Number of parallel iperf3 streams |
+| `rate` | HTB link rate (e.g. `100mbit`) |
+| `delay` | netem one-way delay (e.g. `25ms`) |
+| `loss` | netem packet loss rate (e.g. `0%`, `1%`) — set by T01 |
+| `cc_algo` | TCP congestion-control algorithm override (e.g. `bbr`, `reno`) — set by T02; blank = mode default |
+| `throughput_sent_mbps` | Mean send throughput |
 | `throughput_recv_mbps` | Mean receive throughput over the full run |
 | `throughput_min_mbps` | Minimum per-second throughput (worst-case interval) |
-| `throughput_stddev_mbps` | Std deviation of per-second throughput |
+| `throughput_stddev_mbps` | Std deviation of per-second throughput (stability indicator) |
+| `retransmits` | Total TCP retransmissions |
 | `ecn_mark` | ECN marks issued by fq_codel |
 | `pkt_dropped` | Packets dropped by fq_codel |
 | `rtt_mean_ms` | Mean RTT from `ss` samples |
 | `cwnd_mean` | Mean sender cwnd from `server-ss.log` |
 | `cwnd_min` | Minimum sender cwnd (captures worst congestion response) |
+| `duration_s` | Actual iperf3 transfer duration |
 
 `validate-pcaps.py` writes `results/pcap-validation.csv` with packet-level evidence:
 ECT/CE packets, CE packets, TCP AE-bit packets, AccECN option packets, and SYNs that
