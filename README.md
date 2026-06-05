@@ -215,6 +215,58 @@ python3 analysis/plot-t02-cc-sweep.py
 
 ---
 
+## T03 — Bandwidth Sweep
+
+**Goal:** Evaluate whether ECN's advantage holds as the link rate changes from 10 Mbps to 1 Gbps, and how the fixed `fq_codel target=5ms` interacts with different Bandwidth-Delay Products.
+
+**BDP reference** (rate × 25 ms RTT):
+
+| Rate | BDP | fq_codel mark threshold (5 ms) | Ratio mark/BDP |
+|---:|---:|---:|---:|
+| 10 Mbps | 31 KB | 6 KB | 19 % |
+| 100 Mbps | 312 KB | 62 KB | 20 % |
+| 1 Gbps | 3,125 KB | 625 KB | 20 % |
+
+**Setup:** kernel 7.0.0-22-generic, 25 ms ± 2 ms delay, fq_codel target 5 ms, 0 % loss, 60 s runs.
+
+![T03 Bandwidth Sweep](docs/t03-bandwidth-sweep.png)
+
+### Results
+
+| Rate | No ECN | Classic ECN | AccECN | DCTCP+AccECN |
+|---:|---:|---:|---:|---:|
+| **10 Mbps** | 0.02 Mbps (0.2 %) | 9.49 Mbps (95 %) | 9.44 Mbps (94 %) | 9.45 Mbps (95 %) |
+| **100 Mbps** | 9.45 Mbps (9 %) | 86.52 Mbps (87 %) | 85.93 Mbps (86 %) | 94.68 Mbps (95 %) |
+| **1 Gbps** | 760 Mbps (76 %) | 591 Mbps (59 %) | 589 Mbps (59 %) | 510 Mbps (51 %) |
+
+### T03 Conclusions
+
+- **ECN is essential at 10 Mbps and 100 Mbps.** Without ECN, throughput collapses to near zero at both rates because fq_codel drops instead of marks. The pattern mirrors T01's 0 % loss result.
+
+- **At 1 Gbps the picture inverts: No ECN outperforms ECN modes.** No ECN reaches 760 Mbps (76 % utilisation), while Classic ECN and AccECN stall at ~590 Mbps (59 %) and DCTCP at 510 Mbps (51 %).
+
+- **Why does ECN hurt at 1 Gbps?** The fq_codel `target=5ms` marks flows aggressively to keep sojourn time below 5 ms. At 1 Gbps, 5 ms corresponds to 625 KB — well below the 3.125 MB BDP needed to fill the pipe. ECN-capable flows react to CE marks by halving cwnd before the window is large enough to saturate the link. No ECN flows only get signals at queue overflow (much later), so they can grow the window further before backing off.
+
+- **DCTCP suffers the most at 1 Gbps** (510 Mbps) because its proportional cwnd reduction reacts even more aggressively to the flood of CE marks.
+
+- **Practical takeaway:** In high-bandwidth networks, the `fq_codel target` must be tuned proportionally to the BDP. A target of 5 ms — optimal for a 100 Mbps LAN — is too aggressive for 1 Gbps links. A rule of thumb: `target ≈ RTT / 10`, so for 25 ms RTT the target should be ~2.5 ms regardless of rate, but the `interval` parameter should also scale with RTT.
+
+### Running T03
+
+```bash
+# Full sweep — 3 rates × 4 modes × 60 s ≈ 25 min
+./scripts/run-t03-bandwidth-sweep.sh
+
+# Only 10 Mbps and 100 Mbps, 30 s
+RATES="10mbit 100mbit" DURATION=30 ./scripts/run-t03-bandwidth-sweep.sh
+
+# Analyse and plot
+python3 analysis/parse-results.py
+python3 analysis/plot-t03-bandwidth-sweep.py
+```
+
+---
+
 ## Setup
 
 ### Prerequisites
@@ -278,6 +330,16 @@ RATE=50mbit DELAY=50ms JITTER=5ms ./scripts/run.sh 60
 LOSS_VALUES="0% 1% 5%" DURATION=30 ./scripts/run-t01-loss-sweep.sh
 ```
 
+### T03 — Bandwidth sweep
+
+```bash
+# Full sweep: 10 Mbps / 100 Mbps / 1 Gbps × 4 modes × 60 s
+./scripts/run-t03-bandwidth-sweep.sh
+
+# Custom rates or duration
+RATES="10mbit 1000mbit" DURATION=30 ./scripts/run-t03-bandwidth-sweep.sh
+```
+
 ### T02 — Congestion-control algorithm sweep
 
 ```bash
@@ -304,8 +366,11 @@ python3 analysis/plot-results.py
 # Generate results/t01-loss-sweep.png (T01: throughput vs loss rate)
 python3 analysis/plot-t01-loss-sweep.py
 
-# Generate results/t02-cc-sweep.png (T02: CC algo × ECN mode heatmap)
+# Generate docs/t02-cc-sweep.png (T02: CC algo × ECN mode heatmap)
 python3 analysis/plot-t02-cc-sweep.py
+
+# Generate docs/t03-bandwidth-sweep.png (T03: throughput and utilisation vs link rate)
+python3 analysis/plot-t03-bandwidth-sweep.py
 
 # Validate packet captures for ECN/AccECN evidence
 python3 analysis/validate-pcaps.py
