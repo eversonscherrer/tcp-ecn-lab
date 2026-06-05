@@ -6,4 +6,5 @@ results/*
 __pycache__/
 .venv/
 .DS_Store
+# docs/ is intentionally tracked (README charts live here)
 

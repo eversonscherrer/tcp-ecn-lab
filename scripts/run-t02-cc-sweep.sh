@@ -39,7 +39,8 @@ ECN_TARGET="${ECN_TARGET:-5ms}"
 
 n_cc=$(echo "$CC_ALGOS" | wc -w | tr -d ' ')
 n_modes=$(echo "$ECN_MODES" | wc -w | tr -d ' ')
-total=$(( n_cc * n_modes + (WITH_DCTCP == "yes" ? 1 : 0) ))
+dctcp_extra=0; [[ "$WITH_DCTCP" == "yes" ]] && dctcp_extra=1
+total=$(( n_cc * n_modes + dctcp_extra ))
 
 echo "============================================================"
 echo " T02 — Congestion Control Algorithm Sweep"

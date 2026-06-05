@@ -58,8 +58,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default="results/summary.csv",
                     help="Path to summary.csv (default: results/summary.csv)")
-    ap.add_argument("--output", default="results/t01-loss-sweep.png",
-                    help="Output image path (default: results/t01-loss-sweep.png)")
+    ap.add_argument("--output", default="docs/t01-loss-sweep.png",
+                    help="Output image path (default: docs/t01-loss-sweep.png)")
     args = ap.parse_args()
 
     csv_path = Path(args.results)

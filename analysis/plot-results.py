@@ -272,5 +272,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, help="Output image path")
     args = parser.parse_args()
 
-    output = args.output or args.results / "comparison.png"
+    output = args.output or Path(__file__).parent.parent / "docs" / "comparison.png"
     plot_comparison(args.results, output, args.date)

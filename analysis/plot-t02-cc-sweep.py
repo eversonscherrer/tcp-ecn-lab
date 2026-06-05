@@ -78,7 +78,7 @@ def aggregate(rows, cc: str, mode: str, metric: str) -> float | None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default="results/summary.csv")
-    ap.add_argument("--output",  default="results/t02-cc-sweep.png")
+    ap.add_argument("--output",  default="docs/t02-cc-sweep.png")
     args = ap.parse_args()
 
     csv_path = Path(args.results)

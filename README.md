@@ -134,7 +134,7 @@ analysis before claiming DCTCP is strictly more stable here.
 **Goal:** Evaluate how each ECN mode sustains throughput as packet loss increases from 0 % to 5 %.
 **Setup:** kernel 7.0.0-22-generic, 100 Mbit/s, 25 ms ± 2 ms delay, fq_codel target 5 ms, 60 s runs, 1 stream.
 
-![T01 Loss Sweep](results/t01-loss-sweep.png)
+![T01 Loss Sweep](docs/t01-loss-sweep.png)
 
 ### Results
 
@@ -167,6 +167,50 @@ DURATION=30 MODES="none classic accecn" ./scripts/run-t01-loss-sweep.sh
 # Analyse and plot
 python3 analysis/parse-results.py
 python3 analysis/plot-t01-loss-sweep.py
+```
+
+---
+
+## T02 — Congestion Control Algorithm Sweep
+
+**Goal:** Compare Cubic, Reno and BBR across three ECN modes to understand how each CC algorithm interacts with ECN signalling, and whether BBR's model-based approach behaves differently from loss-based algorithms.
+**Setup:** kernel 7.0.0-22-generic, 100 Mbit/s, 25 ms ± 2 ms delay, fq_codel target 5 ms, 60 s runs, 0 % loss, 1 stream.
+
+![T02 CC Sweep](docs/t02-cc-sweep.png)
+
+### Results
+
+| CC Algorithm | No ECN | Classic ECN | AccECN | DCTCP+AccECN |
+|---|---:|---:|---:|---:|
+| **Cubic** | 0.23 Mbps | 93.81 Mbps | 93.11 Mbps | — |
+| **Reno** | 0.23 Mbps | 84.64 Mbps | 84.01 Mbps | — |
+| **BBR** | 0.24 Mbps | 93.62 Mbps | 92.85 Mbps | — |
+| **DCTCP** | — | — | — | 90.68 Mbps |
+
+### T02 Conclusions
+
+- **ECN is a prerequisite regardless of CC algorithm.** Without ECN, fq_codel has to drop instead of mark, and throughput collapses to ~0.23 Mbps for *all* three algorithms — Cubic, Reno and BBR alike. No CC algorithm is immune to this.
+
+- **Cubic and BBR are nearly identical with ECN** (~93 Mbps), confirming that BBR's bandwidth-model does not provide a meaningful throughput advantage over Cubic in this scenario.
+
+- **Reno underperforms Cubic and BBR by ~10 Mbps** (84 Mbps vs 93 Mbps). Reno halves its cwnd on every congestion event — a more aggressive reduction than Cubic's cubic-function recovery — which keeps average throughput slightly lower.
+
+- **Classic ECN and AccECN deliver the same throughput within each CC algorithm.** AccECN's improved per-ACK CE feedback has no throughput effect when the underlying CC reacts to congestion in the same binary fashion (Cubic and Reno).
+
+- **DCTCP (90.68 Mbps) sits between Reno and Cubic/BBR**, slightly below Cubic+ECN. Its proportional cwnd reduction means many more CE marks but avoids the deep halving of Cubic, keeping average throughput competitive.
+
+### Running T02
+
+```bash
+# Full matrix — 3 CC algos × 3 ECN modes + dctcp × 60 s ≈ 20 min
+./scripts/run-t02-cc-sweep.sh
+
+# Custom: only Cubic and BBR, 30 s
+CC_ALGOS="cubic bbr" DURATION=30 ./scripts/run-t02-cc-sweep.sh
+
+# Analyse and plot
+python3 analysis/parse-results.py
+python3 analysis/plot-t02-cc-sweep.py
 ```
 
 ---
