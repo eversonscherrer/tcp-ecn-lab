@@ -267,6 +267,54 @@ python3 analysis/plot-t03-bandwidth-sweep.py
 
 ---
 
+## T04 — RTT Sweep (Data Center → WAN)
+
+**Goal:** Evaluate how ECN modes behave as one-way delay grows from 1 ms (data center) to 100 ms (intercontinental WAN), and whether DCTCP degrades at high RTTs as expected.
+**Setup:** kernel 7.0.0-22-generic, 100 Mbit/s, 0 % loss, fq_codel target 5 ms, jitter 0 ms, 60 s runs.
+
+![T04 RTT Sweep](docs/t04-rtt-sweep.png)
+
+### Results
+
+| One-way delay | RTT | No ECN | Classic ECN | AccECN | DCTCP+AccECN |
+|---:|---:|---:|---:|---:|---:|
+| 1 ms | 2 ms | 0.30 Mbps | 95.63 Mbps | 94.84 Mbps | 94.84 Mbps |
+| 5 ms | 10 ms | 0.26 Mbps | 95.63 Mbps | 94.82 Mbps | 94.82 Mbps |
+| 10 ms | 20 ms | 0.23 Mbps | 95.59 Mbps | 94.81 Mbps | 94.81 Mbps |
+| 25 ms | 50 ms | 0.23 Mbps | 93.78 Mbps | 92.99 Mbps | 94.70 Mbps |
+| 50 ms | 100 ms | 0.30 Mbps | 89.01 Mbps | 88.25 Mbps | 93.65 Mbps |
+| 100 ms | 200 ms | 0.42 Mbps | 84.27 Mbps | 83.61 Mbps | 87.92 Mbps |
+
+### T04 Conclusions
+
+- **No ECN collapses at every RTT** (0.23–0.42 Mbps), confirming that the fq_codel drop-vs-mark behaviour dominates regardless of delay. ECN is non-negotiable in AQM environments.
+
+- **ECN modes are flat from 1 ms to 10 ms** (~95 Mbps), showing that in data-center RTTs all three variants saturate the 100 Mbps link equally well.
+
+- **Throughput degrades gradually as RTT grows past 25 ms.** At 200 ms RTT, Classic ECN and AccECN deliver 84 Mbps and DCTCP delivers 88 Mbps — still strong, but the pipe is no longer fully utilised.
+
+- **DCTCP is the most resilient at high RTTs.** The hypothesis that DCTCP would degrade faster than Cubic-based modes was *not confirmed*: DCTCP maintains 94 Mbps at 100 ms RTT vs 89 Mbps for Classic/AccECN, a 5 % advantage. DCTCP's proportional feedback keeps cwnd better calibrated even when RTT increases.
+
+- **Why does throughput drop with RTT?** The fq_codel `target=5ms` stays fixed while the BDP grows. At 200 ms RTT, BDP = 2,500 KB but the mark threshold is still only 62 KB. TCP receives CE marks very early and reduces cwnd before the window is large enough to fill the pipe — the same mechanism observed in T03 at 1 Gbps.
+
+- **Classic ECN and AccECN are indistinguishable** across all RTTs (within 1 Mbps), reinforcing T02's finding that AccECN's protocol improvements don't translate to throughput gains when Cubic is the CC algorithm.
+
+### Running T04
+
+```bash
+# Full sweep — 6 RTT levels × 4 modes × 60 s ≈ 28 min
+./scripts/run-t04-rtt-sweep.sh
+
+# Only data-center and WAN extremes, 30 s
+DELAYS="1ms 100ms" DURATION=30 ./scripts/run-t04-rtt-sweep.sh
+
+# Analyse and plot
+python3 analysis/parse-results.py
+python3 analysis/plot-t04-rtt-sweep.py
+```
+
+---
+
 ## Setup
 
 ### Prerequisites
@@ -330,6 +378,16 @@ RATE=50mbit DELAY=50ms JITTER=5ms ./scripts/run.sh 60
 LOSS_VALUES="0% 1% 5%" DURATION=30 ./scripts/run-t01-loss-sweep.sh
 ```
 
+### T04 — RTT sweep
+
+```bash
+# Full sweep: 1 ms → 5 ms → 10 ms → 25 ms → 50 ms → 100 ms one-way delay × 4 modes × 60 s
+./scripts/run-t04-rtt-sweep.sh
+
+# Custom delays
+DELAYS="1ms 25ms 100ms" DURATION=30 ./scripts/run-t04-rtt-sweep.sh
+```
+
 ### T03 — Bandwidth sweep
 
 ```bash
@@ -371,6 +429,9 @@ python3 analysis/plot-t02-cc-sweep.py
 
 # Generate docs/t03-bandwidth-sweep.png (T03: throughput and utilisation vs link rate)
 python3 analysis/plot-t03-bandwidth-sweep.py
+
+# Generate docs/t04-rtt-sweep.png (T04: throughput vs RTT from DC to WAN)
+python3 analysis/plot-t04-rtt-sweep.py
 
 # Validate packet captures for ECN/AccECN evidence
 python3 analysis/validate-pcaps.py
