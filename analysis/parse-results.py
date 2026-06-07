@@ -25,6 +25,25 @@ def parse_iperf(path: Path) -> Optional[dict]:
     }
 
 
+def parse_jain_fairness(path: Path) -> Optional[float]:
+    """Jain's fairness index from per-stream receiver throughputs.
+
+    J = (Σ xᵢ)² / (n × Σ xᵢ²).  Returns 1.0 for single-stream runs."""
+    if not path.exists():
+        return None
+    with path.open() as f:
+        data = json.load(f)
+    streams = data.get("end", {}).get("streams", [])
+    rates = [s.get("receiver", {}).get("bits_per_second", 0) for s in streams]
+    rates = [r for r in rates if r > 0]
+    if len(rates) < 2:
+        return 1.0
+    n = len(rates)
+    sum_r = sum(rates)
+    sum_r2 = sum(r * r for r in rates)
+    return round(sum_r * sum_r / (n * sum_r2), 4) if sum_r2 > 0 else None
+
+
 def parse_iperf_intervals(path: Path) -> list[float]:
     if not path.exists():
         return []
@@ -95,6 +114,7 @@ def main() -> int:
         timestamp, mode = match.groups()
 
         intervals = parse_iperf_intervals(run_dir / "iperf-client.json")
+        jain = parse_jain_fairness(run_dir / "iperf-client.json")
         qdisc = parse_qdisc_final(run_dir / "qdisc-final.log")
 
         params: dict[str, str] = {}
@@ -130,6 +150,7 @@ def main() -> int:
             "cwnd_mean": ss["cwnd_mean"] if ss["cwnd_mean"] is not None else "",
             "cwnd_min": ss["cwnd_min"] if ss["cwnd_min"] is not None else "",
             "rtt_mean_ms": ss["rtt_mean_ms"] if ss["rtt_mean_ms"] is not None else "",
+            "jain_fairness": jain if jain is not None else "",
             "duration_s": round(parsed["duration_s"], 2),
         })
 
