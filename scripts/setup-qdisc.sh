@@ -9,6 +9,7 @@ DELAY="${DELAY:-25ms}"
 JITTER="${JITTER:-2ms}"
 LOSS="${LOSS:-0%}"
 ECN_TARGET="${ECN_TARGET:-5ms}"
+BUFFER_LIMIT="${BUFFER_LIMIT:-1000}"
 
 if [[ -z "$IFACE" ]]; then
     echo "Set IFACE=<server interface>" >&2
@@ -25,7 +26,7 @@ case "$ACTION" in
         sudo tc qdisc add dev "$IFACE" root handle 1: htb default 10
         sudo tc class add dev "$IFACE" parent 1: classid 1:10 htb rate "$RATE" ceil "$RATE"
         sudo tc qdisc add dev "$IFACE" parent 1:10 handle 10: netem delay "$DELAY" "$JITTER" loss "$LOSS"
-        sudo tc qdisc add dev "$IFACE" parent 10:1 handle 100: fq_codel ecn limit 1000 target "$ECN_TARGET"
+        sudo tc qdisc add dev "$IFACE" parent 10:1 handle 100: fq_codel ecn limit "$BUFFER_LIMIT" target "$ECN_TARGET"
         sudo tc -s qdisc show dev "$IFACE"
         sudo tc -s class show dev "$IFACE"
         ;;

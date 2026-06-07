@@ -119,6 +119,7 @@ def main() -> int:
             "delay": params.get("delay", ""),
             "loss": params.get("loss", ""),
             "cc_algo": params.get("cc_algo", ""),
+            "buffer_limit": params.get("buffer_limit", ""),
             "throughput_sent_mbps": round(parsed["throughput_sent_mbps"], 2),
             "throughput_recv_mbps": round(parsed["throughput_recv_mbps"], 2),
             "throughput_min_mbps": round(min(intervals), 2) if intervals else "",

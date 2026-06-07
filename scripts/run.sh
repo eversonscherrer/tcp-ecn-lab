@@ -11,6 +11,7 @@ DELAY="${DELAY:-25ms}"
 JITTER="${JITTER:-2ms}"
 LOSS="${LOSS:-0%}"
 ECN_TARGET="${ECN_TARGET:-5ms}"
+BUFFER_LIMIT="${BUFFER_LIMIT:-1000}"
 # Number of parallel iperf3 streams. Use STREAMS=4 to stress the link and
 # make AccECN's proportional congestion feedback more visible.
 STREAMS="${STREAMS:-1}"
@@ -78,10 +79,10 @@ run_mode() {
     client_ssh "cd '$REMOTE_DIR' && CC_ALGO='${CC_ALGO:-}' ./scripts/configure-ecn.sh '$mode'" | tee "$dir/client-ecn.log"
 
     # Save run parameters for later analysis/filtering
-    printf 'rate=%s\ndelay=%s\njitter=%s\nloss=%s\necn_target=%s\nstreams=%s\ncc_algo=%s\n' \
-        "$RATE" "$DELAY" "$JITTER" "$LOSS" "$ECN_TARGET" "$STREAMS" "${CC_ALGO:-}" > "$dir/params.txt"
+    printf 'rate=%s\ndelay=%s\njitter=%s\nloss=%s\necn_target=%s\nbuffer_limit=%s\nstreams=%s\ncc_algo=%s\n' \
+        "$RATE" "$DELAY" "$JITTER" "$LOSS" "$ECN_TARGET" "$BUFFER_LIMIT" "$STREAMS" "${CC_ALGO:-}" > "$dir/params.txt"
 
-    server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ECN_TARGET='$ECN_TARGET' ./scripts/setup-qdisc.sh apply" \
+    server_ssh "cd '$REMOTE_DIR' && IFACE='$iface' RATE='$RATE' DELAY='$DELAY' JITTER='$JITTER' LOSS='$LOSS' ECN_TARGET='$ECN_TARGET' BUFFER_LIMIT='$BUFFER_LIMIT' ./scripts/setup-qdisc.sh apply" \
         | tee "$dir/qdisc.log"
 
     client_ssh "sudo rm -f /tmp/accecn-handshake.pcap /tmp/accecn-flow.pcap /tmp/accecn-ss.log /tmp/accecn-tcpdump.log /tmp/accecn-ss.out"
