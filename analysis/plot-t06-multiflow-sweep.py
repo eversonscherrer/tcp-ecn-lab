@@ -39,9 +39,9 @@ def load(csv_path: Path) -> list[dict]:
             # T06 rows: streams > 0, no cc_algo override, no buffer_limit, no loss
             if streams and not cc and loss in ("0%", "") and not bl:
                 try:
-                    int(streams)
-                    rows.append(row)
-                except ValueError:
+                    if int(streams) >= 1 and float(row.get("duration_s", 0) or 0) >= 30:
+                        rows.append(row)
+                except (ValueError, TypeError):
                     pass
     return rows
 
