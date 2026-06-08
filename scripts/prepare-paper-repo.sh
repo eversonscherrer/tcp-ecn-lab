@@ -19,6 +19,7 @@ DOCS_DIR="$REPO_ROOT/docs"
 FIGS_DIR="$PAPER_DIR/figures"
 
 FIGURES=(
+  topology.png
   t01-loss-sweep.png
   t04-rtt-sweep.png
   t05-buffer-sweep.png
