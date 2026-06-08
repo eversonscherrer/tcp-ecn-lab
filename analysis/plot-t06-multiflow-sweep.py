@@ -36,8 +36,11 @@ def load(csv_path: Path) -> list[dict]:
             loss    = row.get("loss", "").strip()
             cc      = row.get("cc_algo", "").strip()
             bl      = row.get("buffer_limit", "").strip()
-            # T06 rows: streams > 0, no cc_algo override, no buffer_limit, no loss
-            if streams and not cc and loss in ("0%", "") and not bl:
+            target  = row.get("ecn_target", "").strip()
+            # T06 fixed conditions: buffer_limit=1000, target=5ms, no loss,
+            # no cc override, streams in {1,2,4,8}, full 60 s runs
+            if (streams and not cc and loss in ("0%", "")
+                    and bl == "1000" and target == "5ms"):
                 try:
                     if int(streams) >= 1 and float(row.get("duration_s", 0) or 0) >= 30:
                         rows.append(row)
